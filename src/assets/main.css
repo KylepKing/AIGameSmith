@@ -23,13 +23,18 @@ a,
 
 @media (min-width: 1024px) {
   body {
+    margin: 0;
+    padding: 0;
+    height: 100vh; /* full height of viewport */
     display: flex;
-    place-items: center;
+    justify-content: center; /* center horizontally */
+       /* center vertically */
+    background-color: #191925;
   }
 
-  #app {
+  /*#app {
     display: grid;
     grid-template-columns: 1fr 1fr;
     padding: 0 2rem;
-  }
+  }*/
 }
