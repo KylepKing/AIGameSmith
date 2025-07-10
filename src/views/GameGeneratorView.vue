@@ -11,6 +11,8 @@ import GameGenerator from '../components/GameGenerator.vue'
 const loading = ref(false)
 const responseCode = ref('')
 const customPrompt = ref('')
+const finalizedCode = ref('')
+
 
 //editor options
 const MONACO_EDITOR_OPTIONS = {
@@ -21,11 +23,9 @@ const MONACO_EDITOR_OPTIONS = {
 
 const code = ref('// some code...')
 const editor = shallowRef()
-const handleMount = (editorInstance: any) => (editor.value = editorInstance)
-
-// your action
-function formatCode() {
-  editor.value?.getAction('editor.action.formatDocument').run()
+const handleMount = (editorInstance: any) => {
+  (editor.value = editorInstance)
+   editorInstance.getAction('editor.action.formatDocument').run()
 }
 
 
@@ -33,6 +33,9 @@ async function approveGame() {
   if (!customPrompt.value) return
 
   loading.value = true
+  responseCode.value = ''
+  editableCode.value = ''
+  finalizedCode.value = ''
 
   const prompt = `
 You are a web game developer.
@@ -60,11 +63,39 @@ Keep it concise and short  and self contained
 `.trim()
 
   try {
-    const result = await model.generateContent(prompt)
-    const text = result.response.text()
-    responseCode.value = text
+    const result = await model.generateContentStream({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+
+    // Stream chunks directly into both responseCode and editableCode
+
+
+   let lastLayout = 0
+
+  for await (const chunk of result.stream) {
+    const chunkText = chunk.text()
+    responseCode.value += chunkText
+    editableCode.value += chunkText
+
+    finalizedCode.value = responseCode.value
+
+    const now = Date.now()
+    if (now - lastLayout > 100) {
+      editor.value?.layout()
+      lastLayout = now
+    }
+
+    // Scroll editor to bottom
+    // Get model line count (last line number)
+    const lineCount = editor.value?.getModel()?.getLineCount() || 1
+    // Reveal last line at the bottom of the viewport
+    editor.value?.revealLineInCenter(lineCount)
+
+  }
+
+
   } catch (error) {
     responseCode.value = 'Something went wrong. Check the console.'
+    editableCode.value = 'Something went wrong. Check the console.'
+    finalizedCode.value = ''
     console.error('Gemini error:', error)
   } finally {
     loading.value = false
@@ -77,7 +108,9 @@ function resetApp() {
 
 
 const editableCode = ref('')
-
+const isCodeEdited = computed(() => {
+  return editableCode.value !== responseCode.value
+})
 // Sync code when game is generated
 watch(responseCode, () => {
   editableCode.value = responseCode.value
@@ -85,8 +118,13 @@ watch(responseCode, () => {
 
 function reloadGameFromDebug() {
   responseCode.value = editableCode.value
+  finalizedCode.value = editableCode.value
 }
 
+// ✅ Dynamic editor height based on whether code has been generated
+const editorHeight = computed(() => {
+  return finalizedCode.value.length > 0 ? '600px' : '150px'
+})
 
 </script>
 
@@ -111,27 +149,30 @@ function reloadGameFromDebug() {
   </div>
 
 
-  <!-- Game Runner -->
-  <GameGenerator v-if="responseCode" :responseCode="responseCode" />
 
-  <!-- Debug Console -->
-<div v-if="responseCode" class="debug-console">
+
+
+<!-- Monaco Debug Console -->
+<div class="debug-console">
   <h3>🛠 Debug / Edit Code</h3>
-  <textarea
-    v-model="editableCode"
-    class="debug-textarea"
-    placeholder="Edit the generated code here..."
-  ></textarea>
-  <button @click="reloadGameFromDebug">Reload Game with Edits</button>
+
+  <div class="monaco-wrapper" :style="{ height: editorHeight }">
+    <vue-monaco-editor
+      v-model:value="editableCode"
+      language="html"
+      theme="vs-dark"
+      :options="MONACO_EDITOR_OPTIONS"
+      @mount="handleMount"
+    />
+  </div>
+
+  <button @click="reloadGameFromDebug" :disabled="!isCodeEdited" style="margin-top: 1rem;">
+    🔁 Reload Game with Edits
+  </button>
 </div>
 
-<vue-monaco-editor v-if="responseCode"
-    v-model:value="editableCode"
-    theme="vs-dark"
-    :options="MONACO_EDITOR_OPTIONS"
-    @mount="handleMount"
-  />
-
+<!-- Game Runner -->
+<GameGenerator v-if="!loading && finalizedCode" :responseCode="finalizedCode" />
 </template>
 
 <style scoped>
@@ -217,6 +258,14 @@ textarea {
   color: white;
 }
 
+.monaco-wrapper {
+  width: 100%;
+  transition: height 0.5s ease;
+  border: 1px solid #333;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
 .debug-textarea {
   width: 100%;
   height: 300px;
@@ -229,5 +278,11 @@ textarea {
   font-size: 0.9rem;
   margin-bottom: 1rem;
   resize: vertical;
+}
+
+button:disabled {
+  background-color: #9ca3af;
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 </style>
