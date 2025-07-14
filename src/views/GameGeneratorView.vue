@@ -8,6 +8,7 @@ import GameGenerator from '../components/GameGenerator.vue'
 
 
 // AI response and loading
+const gameGenerated = ref(false)
 const loading = ref(false)
 const responseCode = ref('')
 const customPrompt = ref('')
@@ -29,7 +30,12 @@ const handleMount = (editorInstance: any) => {
 }
 
 
+//Chat history
+const chatHistory = ref<any[]>([])
+let chatSession: any = null
+const codeExists = ref(false)
 async function approveGame() {
+
   if (!customPrompt.value) return
 
   loading.value = true
@@ -37,7 +43,21 @@ async function approveGame() {
   editableCode.value = ''
   finalizedCode.value = ''
 
-  const prompt = `
+  try {
+    // If there's no active chat session, start one with existing history
+    if (!chatSession) {
+      chatSession = model.startChat({
+        history: chatHistory.value,
+        generationConfig: {
+
+        },
+      });
+    }
+
+    // User message
+    const userMessage = codeExists.value
+      ? 'Fix or imporve the existing game code based of this input: " ${customPrompt.value.trim()}"'
+      :`
 You are a web game developer.
 
 Generate a unique and fun video game using this input:
@@ -45,6 +65,8 @@ Generate a unique and fun video game using this input:
 
 You must generate this game code with HTML, CSS, and javaScript in a single output that can be put into a component that can called in the main web page component. Users must be able too see and play the game in the browser using basic mouse and keyboard controls as called for.
 -Give me the raw HTML without markdown or any other formatting.
+
+If code is already generated do not regenerate the game, instead just fix the game based on the new or adjusted game idea. This means modifying the existing code not rebuilding it from scratch.
 
 When generating the game idea, include:
 - its core gameplay loop listed in the game idea (focus on the main mechanics first and if unable to do that simplify the game idea to a version that can be built)
@@ -62,44 +84,54 @@ When generating the game idea, include:
 Keep it concise and short  and self contained
 `.trim()
 
-  try {
-    const result = await model.generateContentStream({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+    // Save user message to history
+    chatHistory.value.push({
+      role: 'user',
+      parts: [{ text: userMessage }],
+    });
 
-    // Stream chunks directly into both responseCode and editableCode
+    // Send message using chat
+    const result = await chatSession.sendMessageStream(userMessage);
 
+    let fullResponse = '';
+    let lastLayout = 0;
 
-   let lastLayout = 0
+    for await (const chunk of result.stream) {
+      const chunkText = chunk.text();
+      fullResponse += chunkText;
+      responseCode.value += chunkText;
+      editableCode.value += chunkText;
 
-  for await (const chunk of result.stream) {
-    const chunkText = chunk.text()
-    responseCode.value += chunkText
-    editableCode.value += chunkText
+      finalizedCode.value = responseCode.value;
 
-    finalizedCode.value = responseCode.value
+      const now = Date.now();
+      if (now - lastLayout > 100) {
+        editor.value?.layout();
+        lastLayout = now;
+      }
 
-    const now = Date.now()
-    if (now - lastLayout > 100) {
-      editor.value?.layout()
-      lastLayout = now
+      const lineCount = editor.value?.getModel()?.getLineCount() || 1;
+      editor.value?.revealLineInCenter(lineCount);
     }
 
-    // Scroll editor to bottom
-    // Get model line count (last line number)
-    const lineCount = editor.value?.getModel()?.getLineCount() || 1
-    // Reveal last line at the bottom of the viewport
-    editor.value?.revealLineInCenter(lineCount)
-
-  }
-
+    // Add AI response to chat history
+    chatHistory.value.push({
+      role: 'model',
+      parts: [{ text: fullResponse }],
+    });
 
   } catch (error) {
-    responseCode.value = 'Something went wrong. Check the console.'
-    editableCode.value = 'Something went wrong. Check the console.'
-    finalizedCode.value = ''
-    console.error('Gemini error:', error)
+    responseCode.value = 'Something went wrong. Check the console.';
+    editableCode.value = 'Something went wrong. Check the console.';
+    finalizedCode.value = '';
+    console.error('Gemini error:', error);
   } finally {
-    loading.value = false
+    gameGenerated.value = true
+    loading.value = false;
+    codeExists.value = true
   }
+
+
 }
 
 function resetApp() {
@@ -121,9 +153,86 @@ function reloadGameFromDebug() {
   finalizedCode.value = editableCode.value
 }
 
+const previousCode = ref('')
+const showUndo = ref(false)
+
+function undoLastFix() {
+  editableCode.value = previousCode.value
+  responseCode.value = previousCode.value
+  finalizedCode.value = previousCode.value
+  showUndo.value = false
+}
+
+
+const fixPrompt = ref('')
+
+async function requestGameFix() {
+  if (!fixPrompt.value || !chatSession) return
+
+  loading.value = true
+
+  try {
+    const userFix = `
+Here is the current game code:
+
+${editableCode.value}
+
+Please modify the game code below to reflect the following change: "${fixPrompt.value.trim()}"
+
+Do not regenerate the game. Do not replace the full code. Only change the parts necessary to apply the fix. Maintain all unchanged parts as-is.
+
+Respond ONLY with valid raw HTML/CSS/JS — no markdown or explanations.
+`.trim()
+
+    chatHistory.value.push({
+      role: 'user',
+      parts: [{ text: userFix }],
+    });
+
+    // Save current code before applying fix
+    previousCode.value = editableCode.value
+    showUndo.value = true
+
+    // Clear for new fix
+    responseCode.value = ''
+    editableCode.value = ''
+    finalizedCode.value = ''
+    const result = await chatSession.sendMessageStream(userFix);
+
+    let fixResponse = ''
+    for await (const chunk of result.stream) {
+      const chunkText = chunk.text()
+      fixResponse += chunkText
+      responseCode.value += chunkText
+      editableCode.value += chunkText
+      finalizedCode.value = responseCode.value
+    }
+
+    chatHistory.value.push({
+      role: 'model',
+      parts: [{ text: fixResponse }],
+    });
+
+  } catch (err) {
+    console.error('Fix request failed:', err)
+  } finally {
+    loading.value = false
+  }
+}
+
+
 // ✅ Dynamic editor height based on whether code has been generated
 const editorHeight = computed(() => {
   return finalizedCode.value.length > 0 ? '600px' : '150px'
+})
+
+const editorWidth = computed(() => {
+  const lines = editableCode.value.split('\n')
+  const longestLine = lines.reduce((a, b) => (a.length > b.length ? a : b), '').length
+  const charWidth = 8.2 // estimate (depends on font)
+  const minWidth = 500
+  const maxWidth = 1200
+  return `${Math.min(Math.max(longestLine * charWidth, minWidth), maxWidth)}px`
 })
 
 </script>
@@ -134,45 +243,68 @@ const editorHeight = computed(() => {
   </div>
 
 
-  <!-- Custom Prompt UI -->
-  <div class="custom-input">
+    <!-- Game Prompt OR Fix Input -->
+  <div v-if="!gameGenerated" class="custom-input">
     <label for="customPrompt">Describe your game idea:</label>
-    <textarea v-model="customPrompt" placeholder="E.g., A detective game set in space with time-loop mechanics..."></textarea>
+    <textarea
+      v-model="customPrompt"
+      placeholder="E.g., A detective game set in space with time-loop mechanics..."
+    ></textarea>
     <div class="button-container">
       <button @click="approveGame" :disabled="loading">
-      {{ loading ? 'Generating...' : 'Generate Game' }}
-    </button>
-    <button @click="resetApp" class="reset-button">
-      🔄 Reset
-    </button>
+        {{ loading ? 'Generating...' : 'Generate Game' }}
+      </button>
+      <button @click="resetApp" class="reset-button">
+        🔄 Reset
+      </button>
     </div>
   </div>
 
-
-
-
-
-<!-- Monaco Debug Console -->
-<div class="debug-console">
-  <h3>🛠 Debug / Edit Code</h3>
-
-  <div class="monaco-wrapper" :style="{ height: editorHeight }">
-    <vue-monaco-editor
-      v-model:value="editableCode"
-      language="html"
-      theme="vs-dark"
-      :options="MONACO_EDITOR_OPTIONS"
-      @mount="handleMount"
-    />
+  <!-- Adjust / Fix prompt -->
+  <div v-else class="fix-input">
+    <label for="fixPrompt">Adjust the game:</label>
+    <textarea
+      v-model="fixPrompt"
+      placeholder="E.g., Make the enemy faster or change the color scheme..."
+    ></textarea>
+    <div class="button-container">
+      <button @click="requestGameFix" :disabled="loading">
+        {{ loading ? 'Adjusting...' : 'Adjust Game' }}
+      </button>
+      <button @click="resetApp" class="reset-button">
+        🔄 Reset
+      </button>
+    </div>
   </div>
 
-  <button @click="reloadGameFromDebug" :disabled="!isCodeEdited" style="margin-top: 1rem;">
-    🔁 Reload Game with Edits
-  </button>
-</div>
+  <!-- Monaco Debug Console -->
+  <div class="debug-console">
+    <h3>🛠 Debug / Edit Code</h3>
 
-<!-- Game Runner -->
-<GameGenerator v-if="!loading && finalizedCode" :responseCode="finalizedCode" />
+    <div class="monaco-wrapper" :style="{ height: editorHeight, width: editorWidth }">
+      <vue-monaco-editor
+        v-model:value="editableCode"
+        language="html"
+        theme="vs-dark"
+        :options="MONACO_EDITOR_OPTIONS"
+        @mount="handleMount"
+      />
+    </div>
+
+    <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+      <button @click="reloadGameFromDebug" :disabled="!isCodeEdited">
+      🔁 Reload Game with Edits
+      </button>
+      <button v-if="showUndo" @click="undoLastFix">
+        ⏪ Undo Last Fix
+      </button>
+    </div>
+  </div>
+  <!-- Game Runner -->
+  <div class="game-container" v-if="!loading && finalizedCode">
+    <GameGenerator :responseCode="finalizedCode" :key="finalizedCode" />
+  </div>
+
 </template>
 
 <style scoped>
@@ -245,6 +377,13 @@ textarea {
   margin-top: 1rem;
 }
 
+.fix-input {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 1rem;
+}
+
 .debug-console {
   margin-top: 2rem;
   width: 90%;
@@ -256,11 +395,12 @@ textarea {
   border-radius: 8px;
   border: 1px solid #444;
   color: white;
+  overflow-x: auto
 }
 
 .monaco-wrapper {
-  width: 100%;
-  transition: height 0.5s ease;
+ /* width: 100%;*/
+  transition: height 0.5s ease, width 0.5s ease;
   border: 1px solid #333;
   border-radius: 6px;
   overflow: hidden;
@@ -280,9 +420,25 @@ textarea {
   resize: vertical;
 }
 
+.game-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 2rem;
+  padding: 1rem;
+}
+
 button:disabled {
   background-color: #9ca3af;
   cursor: not-allowed;
   opacity: 0.7;
+}
+
+button:has(svg), button:has(.undo-icon) {
+  background-color: #eab308; /* amber */
+}
+
+button:has(svg):hover {
+  background-color: #ca8a04;
 }
 </style>

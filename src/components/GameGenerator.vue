@@ -26,6 +26,7 @@ function loadGame() {
   if (!iframeDoc) return
 
   iframeDoc.open()
+  iframeDoc.write('')
   iframeDoc.write(gameCode.value)
   iframeDoc.close()
 }
