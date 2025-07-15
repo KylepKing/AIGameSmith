@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { RouterLink, RouterView, useRouter, useRoute } from 'vue-router'
-import { doc, collection, setDoc, getDoc, onSnapshot, query, orderBy, limit, type Unsubscribe, } from 'firebase/firestore'
+import { doc, collection, setDoc, getDoc, onSnapshot, query, orderBy, limit, type Unsubscribe, getDocs, } from 'firebase/firestore'
 import { firestore } from '../firebase.ts'
-import { ref, shallowRef, computed, watch } from 'vue'
+import { ref, shallowRef, computed, watch, onMounted } from 'vue'
 import { model } from '../firebase.ts'
 import GameGenerator from '../components/GameGenerator.vue'
 
@@ -18,23 +18,31 @@ const finalizedCode = ref('')
 
 const router = useRouter();
 const route = useRoute();
+watch(route, (to, from) => {
+  if (to.path !== from.path) {
+    getGame();
+  }
+});
 const game = ref<any>(null);
 const version = ref<any>(null);
-const versionsRef = ref<Unsubscribe>();
+const versions = ref<any[]>([]);
 
 const createGame = async () => {
   const ref = doc(collection(firestore, 'games'));
-  const data = { id: ref.id, /* some data... */ };
+  const data = { id: ref.id, created_at: new Date()};
   await setDoc(ref, data);
   router.push(`/game/${ref.id}`);
+  game.value = data;
 };
 
 const getGame = async () => {
-  versionsRef.value?.();
+  chatHistory.value = []
+  versions.value = []
   game.value = null;
   version.value = null;
   const { id } = route.params;
-  if (!id) {
+  if (!id ) {
+    chatSession = model.startChat();
     return;
   }
   const docRef = await getDoc(doc(firestore, `games/${id}`));
@@ -43,11 +51,32 @@ const getGame = async () => {
     return;
   }
   game.value = docRef.data();
-  versionsRef.value = onSnapshot(query(collection(firestore, `games/${id}/versions`), orderBy('created_at', 'desc'), limit(1)), (snapshot) => {
-    version.value = snapshot.empty ? null : snapshot.docs[0].data();
-  });
+  const docs = await getDocs(query(collection(firestore, `games/${id}/versions`), orderBy('created_at', 'desc')))
+  versions.value = docs.docs.map(doc => doc.data());
+  version.value = versions.value[0];
+
+  chatHistory.value = versions.value.reverse().map((v: any) => {
+    return v.prompt;
+  })
+
+  chatSession = model.startChat({
+        history: chatHistory.value,
+        generationConfig: {
+
+        },
+      });
+
 };
 
+const createVersion = async () => {
+  const { id } = route.params;
+  if (!id) {
+    return;
+  }
+  const ref = doc(collection(firestore, `games/${id}/versions`));
+  const data = { id: ref.id, prompt: customPrompt.value, code: finalizedCode.value, created_at: new Date() };
+  await setDoc(ref, data);
+};
 
 //editor options
 const MONACO_EDITOR_OPTIONS = {
@@ -154,6 +183,10 @@ Keep it concise and short  and self contained
       parts: [{ text: fullResponse }],
     });
 
+
+      await createGame();
+      await createVersion();
+
   } catch (error) {
     responseCode.value = 'Something went wrong. Check the console.';
     editableCode.value = 'Something went wrong. Check the console.';
@@ -164,7 +197,6 @@ Keep it concise and short  and self contained
     loading.value = false;
     codeExists.value = true
 
-    //createGame() // Save the game after generation
 
   }
 
@@ -172,7 +204,7 @@ Keep it concise and short  and self contained
 }
 
 function resetApp() {
-  window.location.reload()
+  router.push('/')
 }
 
 
@@ -250,6 +282,8 @@ Respond ONLY with valid raw HTML/CSS/JS — no markdown or explanations.
       parts: [{ text: fixResponse }],
     });
 
+    createVersion()
+
   } catch (err) {
     console.error('Fix request failed:', err)
   } finally {
@@ -271,6 +305,14 @@ const editorWidth = computed(() => {
   const maxWidth = 1200
   return `${Math.min(Math.max(longestLine * charWidth, minWidth), maxWidth)}px`
 })
+
+
+
+onMounted(() => {
+  getGame()
+})
+
+
 
 </script>
 

@@ -9,6 +9,11 @@ const router = createRouter({
       name: 'home',
       component: GameGeneratorView,
     },
+    {
+      path: '/game/:id',
+      name: 'game',
+      component: GameGeneratorView,
+    }
 
   ],
 })
