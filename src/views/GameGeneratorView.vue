@@ -1,6 +1,7 @@
 <script setup lang="ts">
-//import { RouterLink, RouterView } from 'vue-router'
-
+import { RouterLink, RouterView, useRouter, useRoute } from 'vue-router'
+import { doc, collection, setDoc, getDoc, onSnapshot, query, orderBy, limit, type Unsubscribe, } from 'firebase/firestore'
+import { firestore } from '../firebase.ts'
 import { ref, shallowRef, computed, watch } from 'vue'
 import { model } from '../firebase.ts'
 import GameGenerator from '../components/GameGenerator.vue'
@@ -13,6 +14,39 @@ const loading = ref(false)
 const responseCode = ref('')
 const customPrompt = ref('')
 const finalizedCode = ref('')
+
+
+const router = useRouter();
+const route = useRoute();
+const game = ref<any>(null);
+const version = ref<any>(null);
+const versionsRef = ref<Unsubscribe>();
+
+const createGame = async () => {
+  const ref = doc(collection(firestore, 'games'));
+  const data = { id: ref.id, /* some data... */ };
+  await setDoc(ref, data);
+  router.push(`/game/${ref.id}`);
+};
+
+const getGame = async () => {
+  versionsRef.value?.();
+  game.value = null;
+  version.value = null;
+  const { id } = route.params;
+  if (!id) {
+    return;
+  }
+  const docRef = await getDoc(doc(firestore, `games/${id}`));
+  if (!docRef.exists()) {
+    router.push('/');
+    return;
+  }
+  game.value = docRef.data();
+  versionsRef.value = onSnapshot(query(collection(firestore, `games/${id}/versions`), orderBy('created_at', 'desc'), limit(1)), (snapshot) => {
+    version.value = snapshot.empty ? null : snapshot.docs[0].data();
+  });
+};
 
 
 //editor options
@@ -129,6 +163,9 @@ Keep it concise and short  and self contained
     gameGenerated.value = true
     loading.value = false;
     codeExists.value = true
+
+    //createGame() // Save the game after generation
+
   }
 
 

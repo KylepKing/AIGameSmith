@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app'
 import { getAI, getGenerativeModel, GoogleAIBackend } from 'firebase/ai'
+import { getFirestore } from 'firebase/firestore'
 // TODO: Add SDKs for Firebase products that you want to use
 // https://firebase.google.com/docs/web/setup#available-libraries
 
@@ -20,10 +21,13 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig)
 //const analytics = getAnalytics(app)
 
+const firestore = getFirestore(app);
+
+
 // Initialize the Gemini Developer API backend service
 const ai = getAI(app, { backend: new GoogleAIBackend() })
 
 // Create a `GenerativeModel` instance with a model that supports your use case
 const model = getGenerativeModel(ai, { model: 'gemini-2.5-flash' })
 
-export { model }
+export { model, firestore }
