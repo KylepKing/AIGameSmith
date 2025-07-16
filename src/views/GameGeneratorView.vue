@@ -9,7 +9,7 @@ import GameGenerator from '../components/GameGenerator.vue'
 
 
 // AI response and loading
-const gameGenerated = ref(false)
+
 const loading = ref(false)
 const responseCode = ref('')
 const customPrompt = ref('')
@@ -18,11 +18,12 @@ const finalizedCode = ref('')
 
 const router = useRouter();
 const route = useRoute();
-watch(route, (to, from) => {
+watch(router.currentRoute, (to, from) => {
   if (to.path !== from.path) {
     getGame();
   }
 });
+
 const game = ref<any>(null);
 const version = ref<any>(null);
 const versions = ref<any[]>([]);
@@ -31,11 +32,14 @@ const createGame = async () => {
   const ref = doc(collection(firestore, 'games'));
   const data = { id: ref.id, created_at: new Date()};
   await setDoc(ref, data);
-  router.push(`/game/${ref.id}`);
+  await router.push(`/game/${ref.id}`);
   game.value = data;
 };
 
 const getGame = async () => {
+
+  editableCode.value = ''
+  finalizedCode.value = ''
   chatHistory.value = []
   versions.value = []
   game.value = null;
@@ -54,10 +58,24 @@ const getGame = async () => {
   const docs = await getDocs(query(collection(firestore, `games/${id}/versions`), orderBy('created_at', 'desc')))
   versions.value = docs.docs.map(doc => doc.data());
   version.value = versions.value[0];
+  editableCode.value = version.value?.code || '';
+  finalizedCode.value = version.value?.code || '';
 
-  chatHistory.value = versions.value.reverse().map((v: any) => {
-    return v.prompt;
+  const prompts = versions.value.reverse().map(( v: any ) => {
+    return { text: v.prompt}
   })
+  const answers = versions.value.reverse().map(( v: any ) => {
+    return { text: v.code }
+  })
+
+  chatHistory.value = [ {
+    role: 'user',
+    parts : prompts
+  },
+  {
+    role: 'model',
+    parts: answers
+  }]
 
   chatSession = model.startChat({
         history: chatHistory.value,
@@ -96,7 +114,6 @@ const handleMount = (editorInstance: any) => {
 //Chat history
 const chatHistory = ref<any[]>([])
 let chatSession: any = null
-const codeExists = ref(false)
 async function approveGame() {
 
   if (!customPrompt.value) return
@@ -107,19 +124,12 @@ async function approveGame() {
   finalizedCode.value = ''
 
   try {
-    // If there's no active chat session, start one with existing history
-    if (!chatSession) {
-      chatSession = model.startChat({
-        history: chatHistory.value,
-        generationConfig: {
 
-        },
-      });
-    }
+
 
     // User message
-    const userMessage = codeExists.value
-      ? 'Fix or imporve the existing game code based of this input: " ${customPrompt.value.trim()}"'
+    const userMessage = game.value
+      ? `Fix or imporve the existing game code based of this input:  " ${customPrompt.value.trim()}"`
       :`
 You are a web game developer.
 
@@ -146,6 +156,7 @@ When generating the game idea, include:
 
 Keep it concise and short  and self contained
 `.trim()
+
 
     // Save user message to history
     chatHistory.value.push({
@@ -177,15 +188,9 @@ Keep it concise and short  and self contained
       editor.value?.revealLineInCenter(lineCount);
     }
 
-    // Add AI response to chat history
-    chatHistory.value.push({
-      role: 'model',
-      parts: [{ text: fullResponse }],
-    });
-
-
       await createGame();
       await createVersion();
+      customPrompt.value = '' // Clear the fix input after applying
 
   } catch (error) {
     responseCode.value = 'Something went wrong. Check the console.';
@@ -193,10 +198,8 @@ Keep it concise and short  and self contained
     finalizedCode.value = '';
     console.error('Gemini error:', error);
   } finally {
-    gameGenerated.value = true
-    loading.value = false;
-    codeExists.value = true
 
+    loading.value = false;
 
   }
 
@@ -205,6 +208,7 @@ Keep it concise and short  and self contained
 
 function resetApp() {
   router.push('/')
+
 }
 
 
@@ -233,10 +237,9 @@ function undoLastFix() {
 }
 
 
-const fixPrompt = ref('')
 
 async function requestGameFix() {
-  if (!fixPrompt.value || !chatSession) return
+  if (!customPrompt.value || !chatSession) return
 
   loading.value = true
 
@@ -246,7 +249,7 @@ Here is the current game code:
 
 ${editableCode.value}
 
-Please modify the game code below to reflect the following change: "${fixPrompt.value.trim()}"
+Please modify the game code below to reflect the following change: "${customPrompt.value.trim()}"
 
 Do not regenerate the game. Do not replace the full code. Only change the parts necessary to apply the fix. Maintain all unchanged parts as-is.
 
@@ -254,7 +257,7 @@ Respond ONLY with valid raw HTML/CSS/JS — no markdown or explanations.
 `.trim()
 
     chatHistory.value.push({
-      role: 'user',
+      role: 'model',
       parts: [{ text: userFix }],
     });
 
@@ -282,7 +285,8 @@ Respond ONLY with valid raw HTML/CSS/JS — no markdown or explanations.
       parts: [{ text: fixResponse }],
     });
 
-    createVersion()
+    await createVersion()
+    customPrompt.value = '' // Clear the fix input after applying
 
   } catch (err) {
     console.error('Fix request failed:', err)
@@ -323,7 +327,7 @@ onMounted(() => {
 
 
     <!-- Game Prompt OR Fix Input -->
-  <div v-if="!gameGenerated" class="custom-input">
+  <div v-if="!game" class="custom-input">
     <label for="customPrompt">Describe your game idea:</label>
     <textarea
       v-model="customPrompt"
@@ -343,7 +347,7 @@ onMounted(() => {
   <div v-else class="fix-input">
     <label for="fixPrompt">Adjust the game:</label>
     <textarea
-      v-model="fixPrompt"
+      v-model="customPrompt"
       placeholder="E.g., Make the enemy faster or change the color scheme..."
     ></textarea>
     <div class="button-container">
