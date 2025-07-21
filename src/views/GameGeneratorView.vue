@@ -2,12 +2,13 @@
 import { RouterLink, RouterView, useRouter, useRoute } from 'vue-router'
 import { doc, collection, setDoc, getDoc, onSnapshot, query, orderBy, limit, type Unsubscribe, getDocs, } from 'firebase/firestore'
 import { firestore } from '../firebase.ts'
-import { ref, shallowRef, computed, watch, onMounted } from 'vue'
+import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { model } from '../firebase.ts'
 import GameGenerator from '../components/GameGenerator.vue'
 
 
 
+const view = ref('prompt')
 // AI response and loading
 
 const loading = ref(false)
@@ -32,12 +33,13 @@ const createGame = async () => {
   const ref = doc(collection(firestore, 'games'));
   const data = { id: ref.id, created_at: new Date()};
   await setDoc(ref, data);
+  game.value = data;
+  await createVersion();
   await router.push(`/game/${ref.id}`);
   game.value = data;
 };
 
 const getGame = async () => {
-
   editableCode.value = ''
   finalizedCode.value = ''
   chatHistory.value = []
@@ -47,8 +49,10 @@ const getGame = async () => {
   const { id } = route.params;
   if (!id ) {
     chatSession = model.startChat();
+    view.value = 'prompt';
     return;
   }
+  view.value = 'generator';
   const docRef = await getDoc(doc(firestore, `games/${id}`));
   if (!docRef.exists()) {
     router.push('/');
@@ -87,10 +91,8 @@ const getGame = async () => {
 };
 
 const createVersion = async () => {
-  const { id } = route.params;
-  if (!id) {
-    return;
-  }
+  if (!game.value) throw new Error('No game to create version for');
+  const { id } = game.value;
   const ref = doc(collection(firestore, `games/${id}/versions`));
   const data = { id: ref.id, prompt: customPrompt.value, code: finalizedCode.value, created_at: new Date() };
   await setDoc(ref, data);
@@ -117,7 +119,7 @@ let chatSession: any = null
 async function approveGame() {
 
   if (!customPrompt.value) return
-
+  view.value = 'generator'
   loading.value = true
   responseCode.value = ''
   editableCode.value = ''
@@ -189,7 +191,7 @@ Keep it concise and short  and self contained
     }
 
       await createGame();
-      await createVersion();
+      console.log('Game created:', game.value);
       customPrompt.value = '' // Clear the fix input after applying
 
   } catch (error) {
@@ -207,7 +209,9 @@ Keep it concise and short  and self contained
 }
 
 function resetApp() {
+  view.value = 'prompt'
   router.push('/')
+
 
 }
 
@@ -316,81 +320,198 @@ onMounted(() => {
   getGame()
 })
 
+const leftWidth = ref(500) // Initial width in pixels
+let isDragging = false
 
+const startDrag = (e: MouseEvent) => {
+  isDragging = true
+  document.addEventListener('mousemove', handleDrag)
+  document.addEventListener('mouseup', stopDrag)
+}
+
+const handleDrag = (e: MouseEvent) => {
+  if (!isDragging) return
+  const minWidth = 200
+  const maxWidth = window.innerWidth - 300
+  leftWidth.value = Math.min(Math.max(e.clientX, minWidth), maxWidth)
+}
+
+const stopDrag = () => {
+  isDragging = false
+  document.removeEventListener('mousemove', handleDrag)
+  document.removeEventListener('mouseup', stopDrag)
+}
+
+onBeforeUnmount(() => {
+  stopDrag()
+})
 
 </script>
 
 <template>
-  <div class="header">
-    <h1>Game Generator</h1>
+
+
+  <div class="main-content" :view="view" v-if="view === 'generator'">
+
+    <div class="split-view">
+
+      <!-- LEFT SIDE -->
+      <div class="left-pane" :style="{ width: leftWidth + 'px' }">
+        <div class="header">
+          <h1>Game Generator</h1>
+        </div>
+
+      <!-- Prompt Input -->
+      <div v-if="!game" class="custom-input">
+        <label for="customPrompt">Describe your game idea:</label>
+        <textarea
+          v-model="customPrompt"
+          placeholder="E.g., A detective game set in space with time-loop mechanics..."
+        ></textarea>
+        <div class="button-container">
+          <button @click="approveGame" :disabled="loading">
+            {{ loading ? 'Generating...' : 'Generate Game' }}
+          </button>
+          <button @click="resetApp" class="reset-button">🔄 Reset</button>
+        </div>
+      </div>
+
+      <!-- Fix Prompt -->
+      <div v-else class="fix-input">
+        <label for="fixPrompt">Adjust the game:</label>
+        <textarea
+          v-model="customPrompt"
+          placeholder="E.g., Make the enemy faster or change the color scheme..."
+        ></textarea>
+        <div class="button-container">
+          <button @click="requestGameFix" :disabled="loading">
+            {{ loading ? 'Adjusting...' : 'Adjust Game' }}
+          </button>
+          <button @click="resetApp" class="reset-button">🔄 Reset</button>
+        </div>
+      </div>
+
+      <!-- Debug Console -->
+      <div class="debug-console">
+        <h3>🛠 Debug / Edit Code</h3>
+
+        <div class="monaco-wrapper" :style="{ height: editorHeight, width: editorWidth }">
+          <vue-monaco-editor
+            v-model:value="editableCode"
+            language="html"
+            theme="vs-dark"
+            :options="MONACO_EDITOR_OPTIONS"
+            @mount="handleMount"
+          />
+        </div>
+
+        <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+          <button @click="reloadGameFromDebug" :disabled="!isCodeEdited">
+            🔁 Reload Game with Edits
+          </button>
+          <button v-if="showUndo" @click="undoLastFix">
+            ⏪ Undo Last Fix
+          </button>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- DRAGGABLE DIVIDER -->
+    <div
+      class="resizer"
+      @mousedown="startDrag">
+    </div>
+
+    <!-- RIGHT SIDE -->
+    <div class="right-pane" :style="{ flex: 1 }" v-if="!loading && finalizedCode">
+      <GameGenerator :responseCode="finalizedCode" :key="finalizedCode" />
+    </div>
+
+  </div>
   </div>
 
+  <div class="prompt-container" v-else-if ="view === 'prompt'">
+
+    <div class="header">
+      <h1>Game Generator</h1>
+    </div>
 
     <!-- Game Prompt OR Fix Input -->
-  <div v-if="!game" class="custom-input">
-    <label for="customPrompt">Describe your game idea:</label>
-    <textarea
-      v-model="customPrompt"
-      placeholder="E.g., A detective game set in space with time-loop mechanics..."
-    ></textarea>
-    <div class="button-container">
-      <button @click="approveGame" :disabled="loading">
-        {{ loading ? 'Generating...' : 'Generate Game' }}
-      </button>
-      <button @click="resetApp" class="reset-button">
-        🔄 Reset
-      </button>
-    </div>
-  </div>
-
-  <!-- Adjust / Fix prompt -->
-  <div v-else class="fix-input">
-    <label for="fixPrompt">Adjust the game:</label>
-    <textarea
-      v-model="customPrompt"
-      placeholder="E.g., Make the enemy faster or change the color scheme..."
-    ></textarea>
-    <div class="button-container">
-      <button @click="requestGameFix" :disabled="loading">
-        {{ loading ? 'Adjusting...' : 'Adjust Game' }}
-      </button>
-      <button @click="resetApp" class="reset-button">
-        🔄 Reset
-      </button>
-    </div>
-  </div>
-
-  <!-- Monaco Debug Console -->
-  <div class="debug-console">
-    <h3>🛠 Debug / Edit Code</h3>
-
-    <div class="monaco-wrapper" :style="{ height: editorHeight, width: editorWidth }">
-      <vue-monaco-editor
-        v-model:value="editableCode"
-        language="html"
-        theme="vs-dark"
-        :options="MONACO_EDITOR_OPTIONS"
-        @mount="handleMount"
-      />
+    <div v-if="!game" class="custom-input">
+      <label for="customPrompt">Describe your game idea:</label>
+      <textarea
+        v-model="customPrompt"
+        placeholder="E.g., A detective game set in space with time-loop mechanics..."
+      ></textarea>
+      <div class="button-container">
+        <button @click="approveGame" :disabled="loading">
+          {{ loading ? 'Generating...' : 'Generate Game' }}
+        </button>
+      </div>
     </div>
 
-    <div style="display: flex; gap: 1rem; margin-top: 1rem;">
-      <button @click="reloadGameFromDebug" :disabled="!isCodeEdited">
-      🔁 Reload Game with Edits
-      </button>
-      <button v-if="showUndo" @click="undoLastFix">
-        ⏪ Undo Last Fix
-      </button>
-    </div>
-  </div>
-  <!-- Game Runner -->
-  <div class="game-container" v-if="!loading && finalizedCode">
-    <GameGenerator :responseCode="finalizedCode" :key="finalizedCode" />
-  </div>
 
+
+  </div>
 </template>
 
 <style scoped>
+
+/*.main-content .debug-console{ use this format for styling the page once the game starts generating
+
+}*/
+
+.split-view {
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+  overflow: hidden;
+  gap : 0.5rem;
+}
+
+.left-pane {
+  border-radius: 4px;
+  border: 1px solid #ffffff;
+  overflow: auto;
+  min-width: 200px;
+  max-width: 80vw;
+}
+
+
+
+.right-pane {
+  flex: 1;
+  overflow: auto;
+  background-color: #111827;
+  padding: 1rem;
+  border-radius: 4px;
+  border: 1px solid #ffffff;
+  /*min-width: 200px;
+  max-width: 80%;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;*/
+}
+
+.resizer {
+   width: 8px;
+  background-color: #4f46e5;
+  cursor: col-resize;
+  user-select: none;
+  /* Make it stretch full height */
+  height: 100%;
+  /* Prevent it from shrinking */
+  flex-shrink: 0;
+  /* optionally add some hover effect */
+  transition: background-color 0.2s ease;
+}
+
+.resizer:hover {
+  background-color: #666;
+}
+
 .header {
   text-align: center;
   margin-bottom: 2rem;
@@ -407,6 +528,13 @@ onMounted(() => {
   margin-top: 1rem;
 }
 
+ .main-content .button-container {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1rem;
+}
 
 .reset-button {
   padding: 0.8rem 1.5rem;
@@ -452,6 +580,8 @@ textarea {
   font-size: 1rem;
   margin-bottom: 1rem;
 }
+
+
 
 .custom-input {
   display: flex;
