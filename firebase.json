@@ -24,7 +24,7 @@
   ],
   "hosting": {
     "site": "aigamesmith-3304",
-    "public": "dist",
+    "public": "./app/dist",
     "ignore": [
       "firebase.json",
       "**/.*",
