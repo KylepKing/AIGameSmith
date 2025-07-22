@@ -30,3 +30,68 @@ setGlobalOptions({ maxInstances: 10 });
 //   logger.info("Hello logs!", {structuredData: true});
 //   response.send("Hello from Firebase!");
 // });
+
+
+/*import { genkit, z } from 'genkit';
+import { googleAI, gemini15Flash } from '@genkit-ai/googleai';
+import { onCallGenkit } from 'firebase-functions/v2/https';
+import { defineSecret } from 'firebase-functions/params';
+import { initializeApp } from 'firebase-admin/app';
+
+// Initialize Firebase Admin SDK
+initializeApp();
+
+// Define the API key as a secret
+const apiKey = defineSecret('GOOGLE_GENAI_API_KEY');
+
+// Initialize Genkit with Google AI plugin
+const ai = genkit({
+  plugins: [googleAI()],
+  model: gemini15Flash,
+});
+
+// Define the input schema
+const inputSchema = z.object({
+  gameId: z.string().nullable(),
+  prompt: z.string(),
+});
+
+// Define the flow
+const gamePromptFlow = ai.defineFlow(
+  {
+    name: 'gamePromptFlow',
+    inputSchema: inputSchema,
+    outputSchema: z.string(),
+    streamSchema: z.string(),
+  },
+  async ({ gameId, prompt }, { sendChunk }) => {
+    // Construct the prompt, incorporating gameId if provided
+    const fullPrompt = gameId
+      ? `For game ID ${gameId}: ${prompt}`
+      : prompt;
+
+    // Generate response using the Gemini model
+    const { stream, response } = ai.generateStream(fullPrompt);
+
+    // Stream the response to the client
+    for await (const chunk of stream) {
+      sendChunk(chunk.text);
+    }
+
+    // Return full response for non-streaming clients
+    return (await response).text;
+  }
+);
+
+// Export the flow as a callable Firebase function
+exports.gamePrompt = onCallGenkit(
+  {
+    secrets: [apiKey],
+    authPolicy: (user) => {
+      if (!user?.firebase?.sign_in_provider) {
+        throw new Error('Authentication required');
+      }
+    }, // Optional: Require authentication
+  },
+  gamePromptFlow
+);*/
