@@ -1,32 +1,94 @@
-/**
- * Import function triggers from their respective submodules:
- *
- * import {onCall} from "firebase-functions/v2/https";
- * import {onDocumentWritten} from "firebase-functions/v2/firestore";
- *
- * See a full list of supported triggers at https://firebase.google.com/docs/functions
- */
-
-import {setGlobalOptions} from "firebase-functions";
-import {onRequest} from "firebase-functions/https";
+import { setGlobalOptions } from "firebase-functions";
+import { onCallGenkit } from "firebase-functions/v2/https";
+import { genkit, z } from "genkit";
+import { googleAI, gemini20Flash } from "@genkit-ai/googleai";
 import * as logger from "firebase-functions/logger";
+import { defineSecret } from "firebase-functions/params";
+const apiKey = defineSecret("GOOGLE_GENAI_API_KEY");
 
-// Start writing functions
-// https://firebase.google.com/docs/functions/typescript
-
-// For cost control, you can set the maximum number of containers that can be
-// running at the same time. This helps mitigate the impact of unexpected
-// traffic spikes by instead downgrading performance. This limit is a
-// per-function limit. You can override the limit for each function using the
-// `maxInstances` option in the function's options, e.g.
-// `onRequest({ maxInstances: 5 }, (req, res) => { ... })`.
-// NOTE: setGlobalOptions does not apply to functions using the v1 API. V1
-// functions should each use functions.runWith({ maxInstances: 10 }) instead.
-// In the v1 API, each function can only serve one request per container, so
-// this will be the maximum concurrent request count.
+// Set global options for cost control
 setGlobalOptions({ maxInstances: 10 });
 
-// export const helloWorld = onRequest((request, response) => {
-//   logger.info("Hello logs!", {structuredData: true});
-//   response.send("Hello from Firebase!");
-// });
+// Initialize Genkit with Google AI plugin
+const ai = genkit({
+  plugins: [googleAI()],
+  model: gemini20Flash,
+});
+
+// Define the game generation flow
+const gameGenerator = ai.defineFlow(
+  {
+    name: "gameGenerator",
+    inputSchema: z.object({
+      prompt: z.string(),
+      isNewGame: z.boolean(),
+      existingCode: z.string().nullable(),
+    }),
+    outputSchema: z.string(),
+    streamSchema: z.string(),
+  },
+  async ({ prompt, isNewGame, existingCode }, { sendChunk }) => {
+    let userMessage: string;
+    logger.log("Generating game with prompt:", prompt, "isNewGame:", isNewGame, "existingCode:", existingCode);
+    if (isNewGame) {
+      userMessage = `
+You are a web game developer.
+
+Generate a unique and fun video game using this input:
+- Game Idea: "${prompt.trim()}"
+
+You must generate this game code with HTML, CSS, and javaScript in a single output that can be put into a component that can called in the main web page component. Users must be able too see and play the game in the browser using basic mouse and keyboard controls as called for.
+-Give me the raw HTML without markdown or any other formatting.
+
+When generating the game idea, include:
+- its core gameplay loop listed in the game idea (focus on the main mechanics first and if unable to do that simplify the game idea to a version that can be built)
+- A elements of the story listen in the game idea (unless the type of game would not make sense to have a story like a puzzle game )
+- Art style possible within the confines of a web game
+-At the end provide a small button in the top left corner that says "||" that when clicked will pause the game and when clicked again will unpause the game .
+-In the top right corner of the game add a small button that says "Reset" that when clicked will reset the game to its initial state.
+-The game should be replayable and not just a one time game.
+-include a simple tutorial popup box that explains how to play the game, needs to be able to be closed and not show again.
+-Do not include any additional features or mechanics unless asked.
+-Do not initialize the game until the DOM is fully loaded.
+-Must include a start game button that starts the game when clicked.
+-Nothing done inside the game should pause the game, only the "||" button should pause the game. (this includes things like movement input changes, collisions, etc.)
+
+Keep it concise and short and self contained
+`.trim();
+    } else {
+      userMessage = `
+Here is the current game code:
+
+${existingCode || ""}
+
+Please modify the game code below to reflect the following change: "${prompt.trim()}"
+
+Do not regenerate the game. Do not replace the full code. Only change the parts necessary to apply the fix. Maintain all unchanged parts as-is.
+
+Respond ONLY with valid raw HTML/CSS/JS — no markdown or explanations.
+`.trim();
+    }
+
+    const { stream } = await ai.generateStream(userMessage);
+
+    let fullResponse = "";
+
+    // Stream the response to the client
+    for await (const chunk of stream) {
+      const chunkText = chunk.text;
+      fullResponse += chunkText;
+      sendChunk(chunkText);
+    }
+
+    // Return full response for non-streaming clients
+    return fullResponse;
+  }
+);
+
+// Export the game generator as a callable Firebase function
+export const generateGame = onCallGenkit(
+  {
+    secrets: [apiKey],
+  },
+  gameGenerator
+);

@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app'
 import { getAI, getGenerativeModel, GoogleAIBackend } from 'firebase/ai'
 import { getFirestore } from 'firebase/firestore'
+import { getFunctions } from 'firebase/functions'
 // TODO: Add SDKs for Firebase products that you want to use
 // https://firebase.google.com/docs/web/setup#available-libraries
 
@@ -22,7 +23,7 @@ const app = initializeApp(firebaseConfig)
 //const analytics = getAnalytics(app)
 
 const firestore = getFirestore(app);
-
+export const functions = getFunctions(app)
 
 // Initialize the Gemini Developer API backend service
 const ai = getAI(app, { backend: new GoogleAIBackend() })
