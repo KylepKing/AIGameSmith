@@ -11,8 +11,7 @@ import { getFunctions, httpsCallable } from 'firebase/functions'
 // Initialize Firebase Functions
 const functions = getFunctions()
 const generateGameFunction = httpsCallable(functions, 'generateGame')
-const createGameFunction = httpsCallable(functions, 'createGame')
-const createVersionFunction = httpsCallable(functions, 'createVersion')
+
 
 const view = ref('prompt')
 // AI response and loading
@@ -111,19 +110,20 @@ async function approveGame() {
   if (!customPrompt.value) return
   view.value = 'generator'
   loading.value = true
-  responseCode.value = ''
-  editableCode.value = ''
-  finalizedCode.value = ''
 
+  console.log(finalizedCode.value)
   try {
     // Call the backend function
-    const { stream } = await generateGameFunction.stream({
+    const { stream, data } = await generateGameFunction.stream({
       prompt: customPrompt.value.trim(),
-      isNewGame: !game.value,
-      existingCode: game.value ? finalizedCode.value : undefined
+      existingCode: game.value ? finalizedCode.value : undefined,
+      gameID: game.value ? game.value.id : ""
     })
 
-   let fullResponse = '';
+    responseCode.value = ''
+    editableCode.value = ''
+    finalizedCode.value = ''
+    let fullResponse = '';
     let lastLayout = 0;
 
     for await (const chunk of stream) {
@@ -144,10 +144,12 @@ async function approveGame() {
       editor.value?.revealLineInCenter(lineCount);
     }
 
+    const result : any = await data
 
-    // Save the game with the generated code
-    await createGame(customPrompt.value, finalizedCode.value)
-    await router.push(`/game/${result.data.gameId}`);
+    if ( !game.value){
+      await router.push(`/game/${result.gameID}`);
+    }
+
     customPrompt.value = '' // Clear the fix input after applying
 
   } catch (error) {
@@ -192,46 +194,6 @@ function undoLastFix() {
 
 
 
-// Updated requestGameFix function
-async function requestGameFix() {
-  if (!customPrompt.value) return
-
-  loading.value = true
-
-  try {
-    // Save current code before applying fix
-    previousCode.value = editableCode.value
-    showUndo.value = true
-
-    // Clear for new fix
-    responseCode.value = ''
-    editableCode.value = ''
-    finalizedCode.value = ''
-
-    // Call the backend function for game fixes
-    const result = await generateGameFunction({
-      prompt: customPrompt.value.trim(),
-      isNewGame: false,
-      existingCode: previousCode.value
-    })
-
-    // Handle streaming response
-    if (result.data && typeof result.data === 'string') {
-      responseCode.value = result.data
-      editableCode.value = result.data
-      finalizedCode.value = result.data
-    }
-
-    // Save the new version
-    await createVersion(customPrompt.value, finalizedCode.value)
-    customPrompt.value = '' // Clear the fix input after applying
-
-  } catch (err) {
-    console.error('Fix request failed:', err)
-  } finally {
-    loading.value = false
-  }
-}
 
 
 // ✅ Dynamic editor height based on whether code has been generated
@@ -318,7 +280,7 @@ onBeforeUnmount(() => {
           placeholder="E.g., Make the enemy faster or change the color scheme..."
         ></textarea>
         <div class="button-container">
-          <button @click="requestGameFix" :disabled="loading">
+          <button @click="approveGame" :disabled="loading">
             {{ loading ? 'Adjusting...' : 'Adjust Game' }}
           </button>
           <button @click="resetApp" class="reset-button">🔄 Reset</button>

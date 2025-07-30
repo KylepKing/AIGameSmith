@@ -7,6 +7,7 @@ import { defineSecret } from "firebase-functions/params";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
+
 const apiKey = defineSecret("GOOGLE_GENAI_API_KEY");
 
 // Initialize Firebase Admin
@@ -65,6 +66,7 @@ When generating the game idea, include:
 -Do not initialize the game until the DOM is fully loaded.
 -Must include a start game button that starts the game when clicked.
 -Nothing done inside the game should pause the game, only the "||" button should pause the game. (this includes things like movement input changes, collisions, etc.)
+- Do not include any comments in the code. OR additions of text like '''html above the code or below the last end script tag of the code
 
 Keep it concise and short and self contained
 `.trim();
@@ -74,14 +76,18 @@ Here is the current game code:
 
 ${existingCode || ""}
 
-Please modify the game code below to reflect the following change: "${prompt.trim()}"
+- Requested Change:
+"${prompt.trim()}"
 
-Do not regenerate the game. Do not replace the full code. Only change the parts necessary to apply the fix. Maintain all unchanged parts as-is.
+Please regenerate the **entire full game code** (HTML, CSS, and JavaScript), incorporating the requested change.
+- The result must be a **complete, functional version** of the updated game.
+- Respond ONLY with raw HTML, CSS, and JavaScript. No markdown or explanations.
+- Do NOT just return the changed portion — regenerate the entire file including unchanged parts.
 
-Respond ONLY with valid raw HTML/CSS/JS — no markdown or explanations.
+Keep it concise, structured, and playable in a browser.
 `.trim();
     }
-
+    logger.log("User message:", userMessage);
     const { stream } = await ai.generateStream(userMessage);
 
     let fullResponse = "";
@@ -111,6 +117,7 @@ Respond ONLY with valid raw HTML/CSS/JS — no markdown or explanations.
     return {fullResponse, gameID, isNewGame};
   }
 );
+
 
 // Export the game generator as a callable Firebase function
 export const generateGame = onCallGenkit(
