@@ -4,7 +4,15 @@ import { genkit, z } from "genkit";
 import { googleAI, gemini20Flash } from "@genkit-ai/googleai";
 import * as logger from "firebase-functions/logger";
 import { defineSecret } from "firebase-functions/params";
+import { initializeApp } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
+
 const apiKey = defineSecret("GOOGLE_GENAI_API_KEY");
+
+// Initialize Firebase Admin
+initializeApp();
+const db = getFirestore();
+
 
 // Set global options for cost control
 setGlobalOptions({ maxInstances: 10 });
@@ -21,16 +29,21 @@ const gameGenerator = ai.defineFlow(
     name: "gameGenerator",
     inputSchema: z.object({
       prompt: z.string(),
-      isNewGame: z.boolean(),
+      gameID: z.string().nullable(),
       existingCode: z.string().nullable(),
     }),
-    outputSchema: z.string(),
+    outputSchema: z.object({
+      fullResponse: z.string(),
+      gameID: z.string(),
+      isNewGame: z.boolean(),
+    }),
     streamSchema: z.string(),
   },
-  async ({ prompt, isNewGame, existingCode }, { sendChunk }) => {
+  async ({ prompt, gameID, existingCode }, { sendChunk }) => {
     let userMessage: string;
-    logger.log("Generating game with prompt:", prompt, "isNewGame:", isNewGame, "existingCode:", existingCode);
-    if (isNewGame) {
+    logger.log("Generating game with prompt:", prompt, "isNewGame:", gameID, "existingCode:", existingCode);
+    let isNewGame = false;
+    if (!gameID) {
       userMessage = `
 You are a web game developer.
 
@@ -80,8 +93,22 @@ Respond ONLY with valid raw HTML/CSS/JS — no markdown or explanations.
       sendChunk(chunkText);
     }
 
-    // Return full response for non-streaming clients
-    return fullResponse;
+    if (!gameID) {
+      // Create a new game document in Firestore
+      isNewGame = true;
+      const gameData = await createGame();
+      await createVersion(gameData.id, prompt, fullResponse);
+      gameID = gameData.id;
+      logger.log("Game created:", gameData);
+    } else {
+      const game = await db.collection("games").doc(gameID).get();
+      if (!game.exists) {
+        throw new Error(`Game with ID ${gameID} does not exist`);
+      }
+      await createVersion(gameID, prompt, fullResponse);
+    }
+    // we should not await the writing to database as we want to return the response immediately
+    return {fullResponse, gameID, isNewGame};
   }
 );
 
@@ -92,3 +119,45 @@ export const generateGame = onCallGenkit(
   },
   gameGenerator
 );
+
+
+// Create game function
+const createGame =
+  async () => {
+    try {
+      // Create game document
+      const gameRef = db.collection("games").doc();
+      const gameData = {
+        id: gameRef.id,
+        created_at: new Date(),
+      };
+      await gameRef.set(gameData);
+
+
+      return gameData;
+    } catch (error) {
+      logger.error("Error creating game:", error);
+      throw new Error("Failed to create game");
+    }
+  };
+
+// Create version function
+const createVersion =
+  async (gameId : string, prompt: string, code: string) => {
+    try {
+      // Create new version
+      const versionRef = db.collection(`games/${gameId}/versions`).doc();
+      const versionData = {
+        id: versionRef.id,
+        prompt: prompt,
+        code: code,
+        created_at: new Date(),
+      };
+      await versionRef.set(versionData);
+
+      return versionData;
+    } catch (error) {
+      logger.error("Error creating version:", error);
+      throw new Error("Failed to create version");
+    }
+  };

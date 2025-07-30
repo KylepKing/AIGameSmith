@@ -11,6 +11,8 @@ import { getFunctions, httpsCallable } from 'firebase/functions'
 // Initialize Firebase Functions
 const functions = getFunctions()
 const generateGameFunction = httpsCallable(functions, 'generateGame')
+const createGameFunction = httpsCallable(functions, 'createGame')
+const createVersionFunction = httpsCallable(functions, 'createVersion')
 
 const view = ref('prompt')
 // AI response and loading
@@ -33,15 +35,6 @@ const game = ref<any>(null);
 const version = ref<any>(null);
 const versions = ref<any[]>([]);
 
-const createGame = async () => {
-  const ref = doc(collection(firestore, 'games'));
-  const data = { id: ref.id, created_at: new Date()};
-  await setDoc(ref, data);
-  game.value = data;
-  await createVersion();
-  await router.push(`/game/${ref.id}`);
-  game.value = data;
-};
 
 const getGame = async () => {
   editableCode.value = ''
@@ -92,14 +85,6 @@ const getGame = async () => {
         },
       });
 
-};
-
-const createVersion = async () => {
-  if (!game.value) throw new Error('No game to create version for');
-  const { id } = game.value;
-  const ref = doc(collection(firestore, `games/${id}/versions`));
-  const data = { id: ref.id, prompt: customPrompt.value, code: finalizedCode.value, created_at: new Date() };
-  await setDoc(ref, data);
 };
 
 //editor options
@@ -159,8 +144,10 @@ async function approveGame() {
       editor.value?.revealLineInCenter(lineCount);
     }
 
-    await createGame()
-    //console.log('Game created:', game.value)
+
+    // Save the game with the generated code
+    await createGame(customPrompt.value, finalizedCode.value)
+    await router.push(`/game/${result.data.gameId}`);
     customPrompt.value = '' // Clear the fix input after applying
 
   } catch (error) {
@@ -235,7 +222,8 @@ async function requestGameFix() {
       finalizedCode.value = result.data
     }
 
-    await createVersion()
+    // Save the new version
+    await createVersion(customPrompt.value, finalizedCode.value)
     customPrompt.value = '' // Clear the fix input after applying
 
   } catch (err) {
