@@ -5,7 +5,12 @@ import { firestore } from '../firebase.ts'
 import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { model } from '../firebase.ts'
 import GameGenerator from '../components/GameGenerator.vue'
+import { getFunctions, httpsCallable } from 'firebase/functions'
 
+
+// Initialize Firebase Functions
+const functions = getFunctions()
+const generateGameFunction = httpsCallable(functions, 'generateGame')
 
 
 const view = ref('prompt')
@@ -29,15 +34,6 @@ const game = ref<any>(null);
 const version = ref<any>(null);
 const versions = ref<any[]>([]);
 
-const createGame = async () => {
-  const ref = doc(collection(firestore, 'games'));
-  const data = { id: ref.id, created_at: new Date()};
-  await setDoc(ref, data);
-  game.value = data;
-  await createVersion();
-  await router.push(`/game/${ref.id}`);
-  game.value = data;
-};
 
 const getGame = async () => {
   editableCode.value = ''
@@ -90,14 +86,6 @@ const getGame = async () => {
 
 };
 
-const createVersion = async () => {
-  if (!game.value) throw new Error('No game to create version for');
-  const { id } = game.value;
-  const ref = doc(collection(firestore, `games/${id}/versions`));
-  const data = { id: ref.id, prompt: customPrompt.value, code: finalizedCode.value, created_at: new Date() };
-  await setDoc(ref, data);
-};
-
 //editor options
 const MONACO_EDITOR_OPTIONS = {
   automaticLayout: true,
@@ -116,67 +104,33 @@ const handleMount = (editorInstance: any) => {
 //Chat history
 const chatHistory = ref<any[]>([])
 let chatSession: any = null
-async function approveGame() {
 
+
+async function approveGame() {
   if (!customPrompt.value) return
   view.value = 'generator'
   loading.value = true
-  responseCode.value = ''
-  editableCode.value = ''
-  finalizedCode.value = ''
 
+  console.log(finalizedCode.value)
   try {
+    // Call the backend function
+    const { stream, data } = await generateGameFunction.stream({
+      prompt: customPrompt.value.trim(),
+      existingCode: game.value ? finalizedCode.value : undefined,
+      gameID: game.value ? game.value.id : ""
+    })
 
-
-
-    // User message
-    const userMessage = game.value
-      ? `Fix or imporve the existing game code based of this input:  " ${customPrompt.value.trim()}"`
-      :`
-You are a web game developer.
-
-Generate a unique and fun video game using this input:
-- Game Idea: "${customPrompt.value.trim()}"
-
-You must generate this game code with HTML, CSS, and javaScript in a single output that can be put into a component that can called in the main web page component. Users must be able too see and play the game in the browser using basic mouse and keyboard controls as called for.
--Give me the raw HTML without markdown or any other formatting.
-
-If code is already generated do not regenerate the game, instead just fix the game based on the new or adjusted game idea. This means modifying the existing code not rebuilding it from scratch.
-
-When generating the game idea, include:
-- its core gameplay loop listed in the game idea (focus on the main mechanics first and if unable to do that simplify the game idea to a version that can be built)
-- A elements of the story listen in the game idea (unless the type of game would not make sense to have a story like a puzzle game )
-- Art style possible within the confines of a web game
--At the end provide a small button in the top left corner that says "||" that when clicked will pause the game and when clicked again will unpause the game .
--In the top right corner of the game add a small button that says "Reset" that when clicked will reset the game to its initial state.
--The game should be replayable and not just a one time game.
--include a simple tutorial popup box that explains how to play the game, needs to be able to be closed and not show again.
--Do not include any additional features or mechanics unless asked.
--Do not initialize the game until the DOM is fully loaded.
--Must include a start game button that starts the game when clicked.
--Nothing done inside the game should pause the game, only the "<code>" button should pause the game. (this includes things like movement input changes, collisions, etc.)
-
-Keep it concise and short  and self contained
-`.trim()
-
-
-    // Save user message to history
-    chatHistory.value.push({
-      role: 'user',
-      parts: [{ text: userMessage }],
-    });
-
-    // Send message using chat
-    const result = await chatSession.sendMessageStream(userMessage);
-
+    responseCode.value = ''
+    editableCode.value = ''
+    finalizedCode.value = ''
     let fullResponse = '';
     let lastLayout = 0;
 
-    for await (const chunk of result.stream) {
-      const chunkText = chunk.text();
-      fullResponse += chunkText;
-      responseCode.value += chunkText;
-      editableCode.value += chunkText;
+    for await (const chunk of stream) {
+      //const chunkText = chunk.text();
+      fullResponse += chunk;
+      responseCode.value += chunk;
+      editableCode.value += chunk;
 
       finalizedCode.value = responseCode.value;
 
@@ -190,29 +144,27 @@ Keep it concise and short  and self contained
       editor.value?.revealLineInCenter(lineCount);
     }
 
-      await createGame();
-      console.log('Game created:', game.value);
-      customPrompt.value = '' // Clear the fix input after applying
+    const result : any = await data
+
+    if ( !game.value){
+      await router.push(`/game/${result.gameID}`);
+    }
+
+    customPrompt.value = '' // Clear the fix input after applying
 
   } catch (error) {
-    responseCode.value = 'Something went wrong. Check the console.';
-    editableCode.value = 'Something went wrong. Check the console.';
-    finalizedCode.value = '';
-    console.error('Gemini error:', error);
+    responseCode.value = 'Something went wrong. Check the console.'
+    editableCode.value = 'Something went wrong. Check the console.'
+    finalizedCode.value = ''
+    console.error('Game generation error:', error)
   } finally {
-
-    loading.value = false;
-
+    loading.value = false
   }
-
-
 }
 
 function resetApp() {
   view.value = 'prompt'
   router.push('/')
-
-
 }
 
 
@@ -242,62 +194,6 @@ function undoLastFix() {
 
 
 
-async function requestGameFix() {
-  if (!customPrompt.value || !chatSession) return
-
-  loading.value = true
-
-  try {
-    const userFix = `
-Here is the current game code:
-
-${editableCode.value}
-
-Please modify the game code below to reflect the following change: "${customPrompt.value.trim()}"
-
-Do not regenerate the game. Do not replace the full code. Only change the parts necessary to apply the fix. Maintain all unchanged parts as-is.
-
-Respond ONLY with valid raw HTML/CSS/JS — no markdown or explanations.
-`.trim()
-
-    chatHistory.value.push({
-      role: 'model',
-      parts: [{ text: userFix }],
-    });
-
-    // Save current code before applying fix
-    previousCode.value = editableCode.value
-    showUndo.value = true
-
-    // Clear for new fix
-    responseCode.value = ''
-    editableCode.value = ''
-    finalizedCode.value = ''
-    const result = await chatSession.sendMessageStream(userFix);
-
-    let fixResponse = ''
-    for await (const chunk of result.stream) {
-      const chunkText = chunk.text()
-      fixResponse += chunkText
-      responseCode.value += chunkText
-      editableCode.value += chunkText
-      finalizedCode.value = responseCode.value
-    }
-
-    chatHistory.value.push({
-      role: 'model',
-      parts: [{ text: fixResponse }],
-    });
-
-    await createVersion()
-    customPrompt.value = '' // Clear the fix input after applying
-
-  } catch (err) {
-    console.error('Fix request failed:', err)
-  } finally {
-    loading.value = false
-  }
-}
 
 
 // ✅ Dynamic editor height based on whether code has been generated
@@ -384,7 +280,7 @@ onBeforeUnmount(() => {
           placeholder="E.g., Make the enemy faster or change the color scheme..."
         ></textarea>
         <div class="button-container">
-          <button @click="requestGameFix" :disabled="loading">
+          <button @click="approveGame" :disabled="loading">
             {{ loading ? 'Adjusting...' : 'Adjust Game' }}
           </button>
           <button @click="resetApp" class="reset-button">🔄 Reset</button>
