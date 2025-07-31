@@ -1,11 +1,11 @@
 import { setGlobalOptions } from "firebase-functions";
-import { onCallGenkit } from "firebase-functions/v2/https";
+import { onCall, onCallGenkit } from "firebase-functions/v2/https";
 import { genkit, z } from "genkit";
 import { googleAI, gemini20Flash } from "@genkit-ai/googleai";
 import * as logger from "firebase-functions/logger";
 import { defineSecret } from "firebase-functions/params";
 import { initializeApp } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 
 
 const apiKey = defineSecret("GOOGLE_GENAI_API_KEY");
@@ -16,7 +16,7 @@ const db = getFirestore();
 
 
 // Set global options for cost control
-setGlobalOptions({ maxInstances: 10 });
+setGlobalOptions({ maxInstances: 5 });
 
 // Initialize Genkit with Google AI plugin
 const ai = genkit({
@@ -120,13 +120,65 @@ Keep it concise, structured, and playable in a browser.
 
 
 // Export the game generator as a callable Firebase function
-export const generateGame = onCallGenkit(
+export const generateGame = onCallGenkit( // also need this to check token amount of user
   {
     secrets: [apiKey],
+    authPolicy: async (user) => {
+      if (!user?.token.firebase?.sign_in_provider) { // get account info from database with userid. check token amount to see if allowed to generate game
+        throw new Error("Unauthorized: User must be authenticated");
+      }
+      // Fetch user account from Firestore
+      const userDoc = await db.collection("users").doc(user.uid).get();
+      if (!userDoc.exists) {
+        throw new Error("Unauthorized: No account found");
+      }
+      const userData = userDoc.data();
+      if (!userData || userData.tokens < 1) {
+        throw new Error("Insufficient tokens to generate a game");
+      }
+
+      // Deduct 1 token immediately when auth policy passes
+      try {
+        await db.collection("users").doc(user.uid).update({
+          tokens: FieldValue.increment(-1),
+        });
+        logger.log(`Deducted 1 token from user ${user.uid}`);
+      } catch (error) {
+        logger.error("Error deducting token:", error);
+        throw new Error("Failed to deduct token");
+      }
+
+      return true;
+    },
   },
   gameGenerator
 );
 
+
+// function to checks if user id has account in database, will be used to check if user is allowed to generate a game
+// if user does not already have an account, it will create one with a default token amount
+// this will be called in the frontend as an https callable function
+
+export const getAccount = onCall( async ({/* data,*/ auth})=> {
+  if (!auth) {
+    throw new Error("Unauthorized: User must be authenticated");
+  }
+  const userId = auth.uid;
+  const user = await db.collection("users").doc(userId).get();
+  if (!user.exists) {
+    // Create a new user account with default token amount
+    const newUser = {
+      id: userId,
+      tokens: 5, // Default token amount
+      created_at: new Date(),
+    };
+    await db.collection("users").doc(userId).set(newUser);
+    logger.log("New user account created:", newUser);
+    return newUser;
+  }
+  return user.data();
+}
+);
 
 // Create game function
 const createGame =
