@@ -40,12 +40,26 @@ const gameGenerator = ai.defineFlow(
     }),
     streamSchema: z.string(),
   },
-  async ({ prompt, gameID, existingCode }, { sendChunk }) => {
+  async ({ prompt, gameID, existingCode }, { sendChunk, context }) => {
     let userMessage: string;
     logger.log("Generating game with prompt:", prompt, "isNewGame:", gameID, "existingCode:", existingCode);
     let isNewGame = false;
-    if (!gameID) {
-      userMessage = `
+    if (!context?.auth) {
+      throw new Error("Unauthorized: User must be authenticated");
+      // Deduct 1 token immediately when auth policy passes
+    }
+    try {
+      await db.collection("users").doc(context.auth.uid).update({
+        tokens: FieldValue.increment(-1),
+      });
+      logger.log(`Deducted 1 token from user ${context.auth.uid}`);
+    } catch (error) {
+      logger.error("Error deducting token:", error);
+      throw new Error("Failed to deduct token");
+    }
+    try {
+      if (!gameID) {
+        userMessage = `
 You are a web game developer.
 
 Generate a unique and fun video game using this input:
@@ -70,8 +84,8 @@ When generating the game idea, include:
 
 Keep it concise and short and self contained
 `.trim();
-    } else {
-      userMessage = `
+      } else {
+        userMessage = `
 Here is the current game code:
 
 ${existingCode || ""}
@@ -86,35 +100,42 @@ Please regenerate the **entire full game code** (HTML, CSS, and JavaScript), inc
 
 Keep it concise, structured, and playable in a browser.
 `.trim();
-    }
-    logger.log("User message:", userMessage);
-    const { stream } = await ai.generateStream(userMessage);
-
-    let fullResponse = "";
-
-    // Stream the response to the client
-    for await (const chunk of stream) {
-      const chunkText = chunk.text;
-      fullResponse += chunkText;
-      sendChunk(chunkText);
-    }
-
-    if (!gameID) {
-      // Create a new game document in Firestore
-      isNewGame = true;
-      const gameData = await createGame();
-      await createVersion(gameData.id, prompt, fullResponse);
-      gameID = gameData.id;
-      logger.log("Game created:", gameData);
-    } else {
-      const game = await db.collection("games").doc(gameID).get();
-      if (!game.exists) {
-        throw new Error(`Game with ID ${gameID} does not exist`);
       }
-      await createVersion(gameID, prompt, fullResponse);
+      logger.log("User message:", userMessage);
+      const { stream } = await ai.generateStream(userMessage);
+
+      let fullResponse = "";
+
+      // Stream the response to the client
+      for await (const chunk of stream) {
+        const chunkText = chunk.text;
+        fullResponse += chunkText;
+        sendChunk(chunkText);
+      }
+
+      if (!gameID) {
+      // Create a new game document in Firestore
+        isNewGame = true;
+        const gameData = await createGame( context.auth.uid );
+        await createVersion(gameData.id, prompt, fullResponse);
+        gameID = gameData.id;
+        logger.log("Game created:", gameData);
+      } else {
+        const game = await db.collection("games").doc(gameID).get();
+        if (!game.exists) {
+          throw new Error(`Game with ID ${gameID} does not exist`);
+        }
+        await createVersion(gameID, prompt, fullResponse);
+      }
+      // we should not await the writing to database as we want to return the response immediately
+      return {fullResponse, gameID, isNewGame};
+    } catch (error : any ) {
+      logger.error("Error generating game:", error);
+      await db.collection("users").doc(context.auth.uid).update({
+        tokens: FieldValue.increment(1), // Refund the token if generation fails
+      });
+      throw new Error(`Failed to generate game: ${error.message}`);
     }
-    // we should not await the writing to database as we want to return the response immediately
-    return {fullResponse, gameID, isNewGame};
   }
 );
 
@@ -129,6 +150,7 @@ export const generateGame = onCallGenkit( // also need this to check token amoun
       }
       // Fetch user account from Firestore
       const userDoc = await db.collection("users").doc(user.uid).get();
+
       if (!userDoc.exists) {
         throw new Error("Unauthorized: No account found");
       }
@@ -137,16 +159,6 @@ export const generateGame = onCallGenkit( // also need this to check token amoun
         throw new Error("Insufficient tokens to generate a game");
       }
 
-      // Deduct 1 token immediately when auth policy passes
-      try {
-        await db.collection("users").doc(user.uid).update({
-          tokens: FieldValue.increment(-1),
-        });
-        logger.log(`Deducted 1 token from user ${user.uid}`);
-      } catch (error) {
-        logger.error("Error deducting token:", error);
-        throw new Error("Failed to deduct token");
-      }
 
       return true;
     },
@@ -182,12 +194,13 @@ export const getAccount = onCall( async ({/* data,*/ auth})=> {
 
 // Create game function
 const createGame =
-  async () => {
+  async ( userId : string ) => {
     try {
       // Create game document
       const gameRef = db.collection("games").doc();
       const gameData = {
         id: gameRef.id,
+        user_id: userId,
         created_at: new Date(),
       };
       await gameRef.set(gameData);

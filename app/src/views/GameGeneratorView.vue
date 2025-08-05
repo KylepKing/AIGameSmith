@@ -6,17 +6,20 @@ import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount } from 'vu
 import { model } from '../firebase.ts'
 import GameGenerator from '../components/GameGenerator.vue'
 import { getFunctions, httpsCallable } from 'firebase/functions'
-import { getAuth, signInWithPopup, GoogleAuthProvider } from "firebase/auth";
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "firebase/auth";
 
 
 // Initialize Firebase Functions
 const functions = getFunctions()
 const generateGameFunction = httpsCallable(functions, 'generateGame')
 const getAccountFunction = httpsCallable(functions, 'getAccount')
+const userSnapshotRef = ref<Unsubscribe | null>(null)
+
 
 const user = ref<any>(null) // this is where you assign the return value of the getaccount function from the backend, ex: if user.token < 1
 const userTokens = ref<number | null>(null)
 const loadingUser = ref(true)
+const initialized = ref(false)
 const showLoginPopup = ref(false)
 
 const canGenerate = computed(() => userTokens.value !== null && userTokens.value > 0)
@@ -27,8 +30,6 @@ const signInWithGoogle = async () => {
 
   try {
     const result = await signInWithPopup(auth, provider)
-    user.value = result.user
-    await fetchUserTokens() // Call backend to get token count
     showLoginPopup.value = false // Close popup after successful login
   } catch (error) {
     console.error("Google sign-in failed:", error)
@@ -45,6 +46,7 @@ const closeLoginPopup = () => {
 }
 
 const fetchUserTokens = async () => {
+  userSnapshotRef.value?.()
   loadingUser.value = true
   try {
     const functions = getFunctions()
@@ -52,6 +54,16 @@ const fetchUserTokens = async () => {
     const response = await getAccount()
     const data = response.data as { tokens: number }
     userTokens.value = data.tokens
+    userSnapshotRef.value = onSnapshot(doc(firestore, `users/${user.value.uid}`), (doc) => {
+      if (doc.exists()) {
+        const data = doc.data()
+        userTokens.value = data.tokens || 0
+      } else {
+        logout()
+        userTokens.value = 0
+
+      }
+    })
   } catch (error) {
     console.error("Error fetching user tokens:", error)
     userTokens.value = null
@@ -60,6 +72,10 @@ const fetchUserTokens = async () => {
   }
 }
 
+const logout = () => {
+  userSnapshotRef.value?.()
+  signOut(getAuth())
+}
 
 const view = ref('prompt')
 // AI response and loading
@@ -301,6 +317,18 @@ onBeforeUnmount(() => {
   stopDrag()
 })
 
+
+onAuthStateChanged(getAuth(), async (result) => {
+  if (result) {
+    user.value = result
+    await fetchUserTokens()
+  } else {
+    user.value = null
+    userTokens.value = null
+  }
+  initialized.value = true
+})
+
 </script>
 
 <template>
@@ -328,15 +356,35 @@ onBeforeUnmount(() => {
     </div>
   </div>
 
-  <div class="main-content" :view="view" v-if="view === 'generator'">
+<!-- TOP BAR WITH LOGOUT BUTTON -->
+  <div class="top-bar">
+    <button
+      v-if="user"
+      @click="logout()"
+      class="logout-button"
+    >Logout</button>
+    <button
+      v-else
+      @click="openLoginPopup"
+      class="login-button"
+    >🔑 Login</button>
+  </div>
+
+  <div class="header">
+    <h1>Game Generator</h1>
+  </div>
+
+  <div v-if="!initialized" class="loading-screen">
+    <h1>Loading...</h1>
+  </div>
+  <div class="main-content" :view="view" v-else-if="view === 'generator'">
+
+
 
     <div class="split-view">
 
       <!-- LEFT SIDE -->
-      <div class="left-pane" :style="{ width: leftWidth + 'px' }">
-        <div class="header">
-          <h1>Game Generator</h1>
-        </div>
+      <div v-if="user && user.uid === game.user_id" class="left-pane" :style="{ width: leftWidth + 'px' }">
 
       <!-- Prompt Input -->
       <div v-if="!game" class="custom-input">
@@ -352,7 +400,7 @@ onBeforeUnmount(() => {
           <p v-if="!canGenerate && !loading" style="color: #f87171; font-weight: bold; text-align: center;">
           You must be logged in and have tokens to generate a game.
           </p>
-          <button v-if="!user" @click="openLoginPopup" class="login-button">🔑 Login</button>
+
           <button @click="resetApp" class="reset-button">🔄 Reset</button>
         </div>
       </div>
@@ -375,8 +423,6 @@ onBeforeUnmount(() => {
           <div v-if="user && userTokens !== null" class="token-display">
             🪙 Tokens: <strong>{{ userTokens }}</strong>
           </div>
-          <!-- Show login button if not logged in -->
-          <button v-else @click="openLoginPopup" class="login-button">🔑 Login</button>
           <button @click="resetApp" class="reset-button">🔄 Reset</button>
         </div>
       </div>
@@ -411,7 +457,8 @@ onBeforeUnmount(() => {
     <!-- DRAGGABLE DIVIDER -->
     <div
       class="resizer"
-      @mousedown="startDrag">
+      @mousedown="startDrag"
+      v-if="user && user.uid === game.user_id">
     </div>
 
     <!-- RIGHT SIDE -->
@@ -424,9 +471,6 @@ onBeforeUnmount(() => {
 
   <div class="prompt-container" v-else-if ="view === 'prompt'">
 
-    <div class="header">
-      <h1>Game Generator</h1>
-    </div>
 
     <!-- Game Prompt OR Fix Input -->
     <div v-if="!game" class="custom-input">
@@ -436,15 +480,16 @@ onBeforeUnmount(() => {
         placeholder="E.g., A detective game set in space with time-loop mechanics..."
       ></textarea>
       <div class="button-container">
-        <button @click="approveGame" :disabled="loading">
+        <button v-if="user" @click="approveGame" :disabled="loading">
+          {{ loading ? 'Generating...' : 'Generate Game' }}
+        </button>
+        <button v-else @click="openLoginPopup":disabled="loading">
           {{ loading ? 'Generating...' : 'Generate Game' }}
         </button>
         <!-- Show token count if logged in -->
           <div v-if="user && userTokens !== null" class="token-display">
             🪙 Tokens: <strong>{{ userTokens }}</strong>
           </div>
-          <!-- Show login button if not logged in -->
-        <button v-else @click="openLoginPopup" class="login-button">🔑 Login</button>
       </div>
     </div>
 
@@ -554,6 +599,9 @@ onBeforeUnmount(() => {
   cursor: pointer;
   font-weight: bold;
   transition: background-color 0.2s;
+  justify-self: center;
+  align-self: center;
+
 }
 
 .login-button:hover {
@@ -755,4 +803,34 @@ button:has(svg), button:has(.undo-icon) {
 button:has(svg):hover {
   background-color: #ca8a04;
 }
+
+.top-bar {
+  width: 95vmax;
+  display: flex;
+  justify-content: center; /* right align button */
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background: #1f1f2f;
+  border-bottom: 1px solid #444;
+  min-height: 48px;
+  box-sizing: border-box;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.logout-button {
+  background-color: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  padding: 0.8rem 1.5rem;
+  transition: background-color 0.2s;
+}
+
+.logout-button:hover {
+  background-color: #b91c1c;
+}
+
 </style>
