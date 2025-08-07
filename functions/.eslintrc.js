@@ -37,5 +37,6 @@ module.exports = {
     "max-len": ["error", {
       "code": 400,
     }],
+    "@typescript-eslint/no-explicit-any": "off",
   }
 }

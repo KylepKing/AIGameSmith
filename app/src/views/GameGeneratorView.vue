@@ -6,20 +6,108 @@ import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount } from 'vu
 import { model } from '../firebase.ts'
 import GameGenerator from '../components/GameGenerator.vue'
 import { getFunctions, httpsCallable } from 'firebase/functions'
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "firebase/auth";
 
 
 // Initialize Firebase Functions
 const functions = getFunctions()
 const generateGameFunction = httpsCallable(functions, 'generateGame')
+const getAccountFunction = httpsCallable(functions, 'getAccount')
+const userSnapshotRef = ref<Unsubscribe | null>(null)
+const buyTokensFunction = httpsCallable(functions, 'buyTokens')
 
-
-const view = ref('prompt')
-// AI response and loading
+const user = ref<any>(null) // this is where you assign the return value of the getaccount function from the backend, ex: if user.token < 1
+const userTokens = ref<number | null>(null)
+const loadingUser = ref(true)
+const initialized = ref(false)
+const showLoginPopup = ref(false)
+const showBuyTokensPopup = ref(false)
+const purchaseSuccess = ref(false)
 
 const loading = ref(false)
 const responseCode = ref('')
 const customPrompt = ref('')
 const finalizedCode = ref('')
+
+
+const canGenerate = computed(() => !loading.value && customPrompt.value.trim())
+
+const signInWithGoogle = async () => {
+  const auth = getAuth()
+  const provider = new GoogleAuthProvider()
+
+  try {
+    const result = await signInWithPopup(auth, provider)
+    showLoginPopup.value = false // Close popup after successful login
+  } catch (error) {
+    console.error("Google sign-in failed:", error)
+    alert("Sign-in failed. Please try again.")
+  }
+}
+
+const openLoginPopup = () => {
+  showLoginPopup.value = true
+}
+
+const closeLoginPopup = () => {
+  showLoginPopup.value = false
+}
+
+const fetchUserTokens = async () => {
+  userSnapshotRef.value?.()
+  loadingUser.value = true
+  try {
+    const functions = getFunctions()
+    const getAccount = httpsCallable(functions, 'getAccount')
+    const response = await getAccount()
+    const data = response.data as { tokens: number }
+    userTokens.value = data.tokens
+    userSnapshotRef.value = onSnapshot(doc(firestore, `users/${user.value.uid}`), (doc) => {
+      if (doc.exists()) {
+        const data = doc.data()
+        userTokens.value = data.tokens || 0
+      } else {
+        logout()
+        userTokens.value = 0
+
+      }
+    })
+  } catch (error) {
+    console.error("Error fetching user tokens:", error)
+    userTokens.value = null
+  } finally {
+    loadingUser.value = false
+  }
+}
+
+const openBuyTokensPopup = () => {
+  showBuyTokensPopup.value = true
+}
+
+const closeBuyTokensPopup = () => {
+  showBuyTokensPopup.value = false
+  purchaseSuccess.value = false
+}
+
+const buyTokens = async () => {
+  loading.value = true
+  try {
+    await buyTokensFunction()
+  } catch (error) {
+    console.error('Error buying tokens:', error)
+  }
+  loading.value = false
+  purchaseSuccess.value = true
+}
+
+const logout = () => {
+  userSnapshotRef.value?.()
+  signOut(getAuth())
+}
+
+const view = ref('prompt')
+// AI response and loading
+
 
 
 const router = useRouter();
@@ -34,8 +122,10 @@ const game = ref<any>(null);
 const version = ref<any>(null);
 const versions = ref<any[]>([]);
 
+const loadingGame = ref(false)
 
 const getGame = async () => {
+  loadingGame.value = true
   editableCode.value = ''
   finalizedCode.value = ''
   chatHistory.value = []
@@ -43,7 +133,7 @@ const getGame = async () => {
   game.value = null;
   version.value = null;
   const { id } = route.params;
-  if (!id ) {
+  if (!id) {
     chatSession = model.startChat();
     view.value = 'prompt';
     return;
@@ -60,30 +150,7 @@ const getGame = async () => {
   version.value = versions.value[0];
   editableCode.value = version.value?.code || '';
   finalizedCode.value = version.value?.code || '';
-
-  const prompts = versions.value.reverse().map(( v: any ) => {
-    return { text: v.prompt}
-  })
-  const answers = versions.value.reverse().map(( v: any ) => {
-    return { text: v.code }
-  })
-
-  chatHistory.value = [ {
-    role: 'user',
-    parts : prompts
-  },
-  {
-    role: 'model',
-    parts: answers
-  }]
-
-  chatSession = model.startChat({
-        history: chatHistory.value,
-        generationConfig: {
-
-        },
-      });
-
+  loadingGame.value = false
 };
 
 //editor options
@@ -97,7 +164,7 @@ const code = ref('// some code...')
 const editor = shallowRef()
 const handleMount = (editorInstance: any) => {
   (editor.value = editorInstance)
-   editorInstance.getAction('editor.action.formatDocument').run()
+  editorInstance.getAction('editor.action.formatDocument').run()
 }
 
 
@@ -108,6 +175,16 @@ let chatSession: any = null
 
 async function approveGame() {
   if (!customPrompt.value) return
+
+
+
+  // Check if user has tokens
+  console.log('User tokens:', userTokens.value)
+  if (userTokens.value === null || userTokens.value <= 0) {
+    openBuyTokensPopup()
+    return
+  }
+
   view.value = 'generator'
   loading.value = true
 
@@ -144,9 +221,9 @@ async function approveGame() {
       editor.value?.revealLineInCenter(lineCount);
     }
 
-    const result : any = await data
+    const result: any = await data
 
-    if ( !game.value){
+    if (!game.value) {
       await router.push(`/game/${result.gameID}`);
     }
 
@@ -157,9 +234,9 @@ async function approveGame() {
     editableCode.value = 'Something went wrong. Check the console.'
     finalizedCode.value = ''
     console.error('Game generation error:', error)
-  } finally {
-    loading.value = false
   }
+  console.log('loading set to false')
+  loading.value = false
 }
 
 function resetApp() {
@@ -212,9 +289,9 @@ const editorWidth = computed(() => {
 
 
 
-onMounted(() => {
-  getGame()
-})
+
+
+
 
 const leftWidth = ref(500) // Initial width in pixels
 let isDragging = false
@@ -242,109 +319,188 @@ onBeforeUnmount(() => {
   stopDrag()
 })
 
+
+onAuthStateChanged(getAuth(), async (result) => {
+  if (result) {
+    user.value = result
+    await fetchUserTokens()
+  } else {
+    user.value = null
+    userTokens.value = null
+  }
+  initialized.value = true
+  getGame()
+
+})
+
 </script>
 
 <template>
 
+  <!-- Login Popup -->
+  <div v-if="showLoginPopup" class="login-popup-overlay" @click="closeLoginPopup">
+    <div class="login-popup" @click.stop>
+      <div class="login-header">
+        <h2>Login Required</h2>
+        <button class="close-button" @click="closeLoginPopup">×</button>
+      </div>
+      <div class="login-content">
+        <p>You need to be logged in to generate games.</p>
+        <p>You'll receive 10 free tokens to start!</p>
+        <button @click="signInWithGoogle" class="google-login-button">
+          <svg width="20" height="20" viewBox="0 0 24 24">
+            <path fill="#4285F4"
+              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+            <path fill="#34A853"
+              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+            <path fill="#FBBC05"
+              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+            <path fill="#EA4335"
+              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+          </svg>
+          Sign in with Google
+        </button>
+      </div>
+    </div>
+  </div>
 
-  <div class="main-content" :view="view" v-if="view === 'generator'">
+  <!-- Buy Tokens Popup -->
+  <div v-if="showBuyTokensPopup" class="login-popup-overlay" @click="closeBuyTokensPopup">
+    <div class="login-popup" @click.stop>
+      <div v-if="!purchaseSuccess" class="login-header">
+        <h2>Out of Tokens</h2>
+        <button class="close-button" @click="closeBuyTokensPopup">×</button>
+      </div>
+      <div v-else class="login-header">
+        <h2>Purchase More?</h2>
+        <button class="close-button" @click="closeBuyTokensPopup">×</button>
+      </div>
+      <div v-if="!purchaseSuccess" class="login-content">
+        <p>You're out of Tokens!</p>
+        <p>Purchase more tokens to continue generating games.</p>
+        <button @click="buyTokens" class="google-login-button" :disabled="loading">
+          �� Buy Tokens
+        </button>
+      </div>
+      <div v-else class="login-content">
+        <p>You're have Tokens!</p>
+        <p>Purchase Successful!</p>
+        <button @click="buyTokens" class="google-login-button" :disabled="loading">
+          �� Buy Tokens
+        </button>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!-- TOP BAR WITH LOGOUT BUTTON -->
+  <div class="top-bar">
+    <button v-if="user" @click="logout()" class="logout-button">Logout</button>
+    <button v-else @click="openLoginPopup" class="login-button">🔑 Login</button>
+  </div>
+
+  <div class="header">
+    <h1>Game Generator</h1>
+  </div>
+
+  <div v-if="!initialized" class="loading-screen">
+    <h1>Loading...</h1>
+  </div>
+  <div class="main-content" :view="view" v-else-if="view === 'generator'">
+
+
 
     <div class="split-view">
 
       <!-- LEFT SIDE -->
-      <div class="left-pane" :style="{ width: leftWidth + 'px' }">
-        <div class="header">
-          <h1>Game Generator</h1>
+      <div v-if="user && (!game || user.uid === game.user_id)" class="left-pane" :style="{ width: leftWidth + 'px' }">
+
+        <!-- Prompt Input -->
+        <div v-if="!game" class="custom-input">
+          <label for="customPrompt">Describe your game idea:</label>
+          <textarea v-model="customPrompt"
+            placeholder="E.g., A detective game set in space with time-loop mechanics..."></textarea>
+          <div class="button-container">
+            <button @click="approveGame" :disabled="!canGenerate">
+              {{ loading ? 'Generating...' : 'Generate Game' }}
+            </button>
+            <button @click="resetApp" class="reset-button">🔄 Reset</button>
+          </div>
         </div>
 
-      <!-- Prompt Input -->
-      <div v-if="!game" class="custom-input">
-        <label for="customPrompt">Describe your game idea:</label>
-        <textarea
-          v-model="customPrompt"
-          placeholder="E.g., A detective game set in space with time-loop mechanics..."
-        ></textarea>
-        <div class="button-container">
-          <button @click="approveGame" :disabled="loading">
-            {{ loading ? 'Generating...' : 'Generate Game' }}
-          </button>
-          <button @click="resetApp" class="reset-button">🔄 Reset</button>
-        </div>
-      </div>
-
-      <!-- Fix Prompt -->
-      <div v-else class="fix-input">
-        <label for="fixPrompt">Adjust the game:</label>
-        <textarea
-          v-model="customPrompt"
-          placeholder="E.g., Make the enemy faster or change the color scheme..."
-        ></textarea>
-        <div class="button-container">
-          <button @click="approveGame" :disabled="loading">
-            {{ loading ? 'Adjusting...' : 'Adjust Game' }}
-          </button>
-          <button @click="resetApp" class="reset-button">🔄 Reset</button>
-        </div>
-      </div>
-
-      <!-- Debug Console -->
-      <div class="debug-console">
-        <h3>🛠 Debug / Edit Code</h3>
-
-        <div class="monaco-wrapper" :style="{ height: editorHeight, width: editorWidth }">
-          <vue-monaco-editor
-            v-model:value="editableCode"
-            language="html"
-            theme="vs-dark"
-            :options="MONACO_EDITOR_OPTIONS"
-            @mount="handleMount"
-          />
+        <!-- Fix Prompt -->
+        <div v-else class="fix-input">
+          <label for="fixPrompt">Adjust the game:</label>
+          <textarea v-model="customPrompt"
+            placeholder="E.g., Make the enemy faster or change the color scheme..."></textarea>
+          <div class="button-container">
+            <button @click="approveGame" :disabled="!canGenerate">
+              {{ loading ? 'Adjusting...' : 'Adjust Game' }}
+            </button>
+            <!-- Show token count if logged in -->
+            <div v-if="user && userTokens !== null" class="token-display">
+              🪙 Tokens: <strong>{{ userTokens }}</strong>
+            </div>
+            <button @click="resetApp" class="reset-button">🔄 Reset</button>
+          </div>
         </div>
 
-        <div style="display: flex; gap: 1rem; margin-top: 1rem;">
-          <button @click="reloadGameFromDebug" :disabled="!isCodeEdited">
-            🔁 Reload Game with Edits
-          </button>
-          <button v-if="showUndo" @click="undoLastFix">
-            ⏪ Undo Last Fix
-          </button>
+        <!-- Debug Console -->
+        <div class="debug-console">
+          <h3>🛠 Debug / Edit Code</h3>
+
+          <div class="monaco-wrapper" :style="{ height: editorHeight, width: editorWidth }">
+            <vue-monaco-editor v-model:value="editableCode" language="html" theme="vs-dark"
+              :options="MONACO_EDITOR_OPTIONS" @mount="handleMount" />
+          </div>
+
+          <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+            <button @click="reloadGameFromDebug" :disabled="!isCodeEdited">
+              🔁 Reload Game with Edits
+            </button>
+            <button v-if="showUndo" @click="undoLastFix">
+              ⏪ Undo Last Fix
+            </button>
+          </div>
+
         </div>
 
       </div>
 
-    </div>
+      <!-- DRAGGABLE DIVIDER -->
+      <div class="resizer" @mousedown="startDrag" v-if="user && (!game || user.uid === game.user_id)">
+      </div>
 
-    <!-- DRAGGABLE DIVIDER -->
-    <div
-      class="resizer"
-      @mousedown="startDrag">
+      <!-- RIGHT SIDE -->
+      <div class="right-pane" :style="{ flex: 1 }">
+        <GameGenerator v-if="finalizedCode && !loading" :responseCode="finalizedCode" :key="finalizedCode" />
+        <div v-else class="loading-screen">
+          <h2>Generating game...</h2>
+        </div>
+      </div>
     </div>
-
-    <!-- RIGHT SIDE -->
-    <div class="right-pane" :style="{ flex: 1 }" v-if="!loading && finalizedCode">
-      <GameGenerator :responseCode="finalizedCode" :key="finalizedCode" />
-    </div>
-
-  </div>
   </div>
 
-  <div class="prompt-container" v-else-if ="view === 'prompt'">
+  <div class="prompt-container" v-else-if="view === 'prompt'">
 
-    <div class="header">
-      <h1>Game Generator</h1>
-    </div>
 
     <!-- Game Prompt OR Fix Input -->
     <div v-if="!game" class="custom-input">
       <label for="customPrompt">Describe your game idea:</label>
-      <textarea
-        v-model="customPrompt"
-        placeholder="E.g., A detective game set in space with time-loop mechanics..."
-      ></textarea>
+      <textarea v-model="customPrompt"
+        placeholder="E.g., A detective game set in space with time-loop mechanics..."></textarea>
       <div class="button-container">
-        <button @click="approveGame" :disabled="loading">
+        <button v-if="user" @click="approveGame" :disabled="!canGenerate">
           {{ loading ? 'Generating...' : 'Generate Game' }}
         </button>
+        <button v-else @click="openLoginPopup" :disabled="!canGenerate">
+          {{ loading ? 'Generating...' : 'Generate Game' }}
+        </button>
+        <!-- Show token count if logged in -->
+        <div v-if="user && userTokens !== null" class="token-display">
+          🪙 Tokens: <strong>{{ userTokens }}</strong>
+        </div>
       </div>
     </div>
 
@@ -354,6 +510,113 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Login Popup Styles */
+.login-popup-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.login-popup {
+  background-color: #1f1f2f;
+  border: 1px solid #444;
+  border-radius: 12px;
+  padding: 2rem;
+  max-width: 400px;
+  width: 90%;
+  color: white;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+}
+
+.login-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.login-header h2 {
+  margin: 0;
+  color: #51a2ff;
+  font-size: 1.5rem;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  color: #999;
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background-color 0.2s;
+}
+
+.close-button:hover {
+  background-color: #333;
+  color: white;
+}
+
+.login-content {
+  text-align: center;
+}
+
+.login-content p {
+  margin-bottom: 1rem;
+  color: #ccc;
+  line-height: 1.5;
+}
+
+.google-login-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.8rem 1.5rem;
+  background-color: #4285F4;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  font-size: 1rem;
+  transition: background-color 0.2s;
+}
+
+.google-login-button:hover {
+  background-color: #3367D6;
+}
+
+.login-button {
+  padding: 0.8rem 1.5rem;
+  background-color: #eab308;
+  color: #1e1e2f;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background-color 0.2s;
+  justify-self: center;
+  align-self: center;
+
+}
+
+.login-button:hover {
+  background-color: #ca8a04;
+}
 
 /*.main-content .debug-console{ use this format for styling the page once the game starts generating
 
@@ -364,7 +627,7 @@ onBeforeUnmount(() => {
   flex-direction: row;
   height: 100vh;
   overflow: hidden;
-  gap : 0.5rem;
+  gap: 0.5rem;
 }
 
 .left-pane {
@@ -392,7 +655,7 @@ onBeforeUnmount(() => {
 }
 
 .resizer {
-   width: 8px;
+  width: 8px;
   background-color: #4f46e5;
   cursor: col-resize;
   user-select: none;
@@ -424,7 +687,7 @@ onBeforeUnmount(() => {
   margin-top: 1rem;
 }
 
- .main-content .button-container {
+.main-content .button-container {
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -508,7 +771,7 @@ textarea {
 }
 
 .monaco-wrapper {
- /* width: 100%;*/
+  /* width: 100%;*/
   transition: height 0.5s ease, width 0.5s ease;
   border: 1px solid #333;
   border-radius: 6px;
@@ -543,11 +806,113 @@ button:disabled {
   opacity: 0.7;
 }
 
-button:has(svg), button:has(.undo-icon) {
-  background-color: #eab308; /* amber */
+button:has(svg),
+button:has(.undo-icon) {
+  background-color: #eab308;
+  /* amber */
 }
 
 button:has(svg):hover {
   background-color: #ca8a04;
+}
+
+.top-bar {
+  width: 95vmax;
+  display: flex;
+  justify-content: center;
+  /* right align button */
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background: #1f1f2f;
+  border-bottom: 1px solid #444;
+  min-height: 48px;
+  box-sizing: border-box;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.logout-button {
+  background-color: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  padding: 0.8rem 1.5rem;
+  transition: background-color 0.2s;
+}
+
+.logout-button:hover {
+  background-color: #b91c1c;
+}
+
+
+.buy-tokens-popup-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.buy-tokens-popup {
+  background-color: #1f1f2f;
+  border: 1px solid #444;
+  border-radius: 12px;
+  padding: 2rem;
+  max-width: 400px;
+  width: 90%;
+  color: white;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+}
+
+.buy-tokens-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.buy-tokens-header h2 {
+  margin: 0;
+  color: #51a2ff;
+  font-size: 1.5rem;
+}
+
+.buy-tokens-content {
+  text-align: center;
+}
+
+.buy-tokens-content p {
+  margin-bottom: 1rem;
+  color: #ccc;
+  line-height: 1.5;
+}
+
+.buy-tokens-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.8rem 1.5rem;
+  background-color: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  font-size: 1rem;
+  transition: background-color 0.2s;
+}
+
+.buy-tokens-button:hover {
+  background-color: #388E3C;
 }
 </style>
