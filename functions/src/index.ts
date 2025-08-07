@@ -81,6 +81,7 @@ When generating the game idea, include:
 -Must include a start game button that starts the game when clicked.
 -Nothing done inside the game should pause the game, only the "||" button should pause the game. (this includes things like movement input changes, collisions, etc.)
 - Do not include any comments in the code. OR additions of text like '''html above the code or below the last end script tag of the code
+- do not use any markup
 
 Keep it concise and short and self contained
 `.trim();
@@ -191,6 +192,34 @@ export const getAccount = onCall( async ({/* data,*/ auth})=> {
   return user.data();
 }
 );
+
+// Buy tokens function - adds 1 token to user's account
+export const buyTokens = onCall(async ({ auth }) => {
+  if (!auth) {
+    throw new Error("Unauthorized: User must be authenticated");
+  }
+
+  const userId = auth.uid;
+
+  try {
+    const userDoc = await db.collection("users").doc(userId).get();
+    if (!userDoc.exists) {
+      throw new Error("User account does not exist");
+    }
+    await userDoc.ref.update({
+      tokens: FieldValue.increment(1),
+    });
+    logger.log(`Added 1 token to user ${userId}`);
+
+    // Return updated user data
+
+    return userDoc.data();
+  } catch (error) {
+    logger.error("Error adding token:", error);
+    throw new Error("Failed to add token");
+  }
+});
+
 
 // Create game function
 const createGame =
